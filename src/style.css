@@ -1,0 +1,27 @@
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background: #eadcda;
+  color: #390607;
+}
+
+button {
+  font-family: inherit;
+}
+
+@media (max-width: 700px) {
+  body {
+    min-width: 320px;
+  }
+}
