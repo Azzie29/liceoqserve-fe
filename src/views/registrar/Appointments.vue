@@ -1,4 +1,3 @@
-
 <template>
   <div class="appointments-page">
     <div class="page-heading">
@@ -47,12 +46,10 @@
               <span class="detail-icon">♙</span>
               {{ appointment.student }}
             </span>
-
             <span class="detail-item">
               <span class="detail-icon">▦</span>
               {{ formatDate(appointment.date) }}
             </span>
-
             <span class="detail-item">
               <span class="detail-icon">◷</span>
               {{ formatTime(appointment.time) }}
@@ -95,7 +92,7 @@
               v-if="['Pending', 'Confirmed'].includes(appointment.status)"
               class="action-button cancel"
               type="button"
-              @click="cancelAppointment(appointment)"
+              @click="openCancelConfirmation(appointment)"
             >
               Cancel
             </button>
@@ -103,10 +100,7 @@
         </div>
       </article>
 
-      <div
-        v-if="filteredAppointments.length === 0"
-        class="empty-state"
-      >
+      <div v-if="filteredAppointments.length === 0" class="empty-state">
         <div class="empty-symbol">▦</div>
         <h2>No appointments found</h2>
         <p>There are no appointments under this status.</p>
@@ -166,11 +160,7 @@
           <label for="new-time">Appointment Time</label>
           <select id="new-time" v-model="newTime" required>
             <option disabled value="">Select a time</option>
-            <option
-              v-for="time in timeSlots"
-              :key="time"
-              :value="time"
-            >
+            <option v-for="time in timeSlots" :key="time" :value="time">
               {{ formatTime(time) }}
             </option>
           </select>
@@ -187,12 +177,65 @@
             >
               Back
             </button>
-
             <button type="submit" class="action-button primary">
               Save Changes
             </button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <!-- Cancel appointment confirmation dialog -->
+    <div
+      v-if="cancelTarget"
+      class="modal-overlay"
+      @click.self="closeCancelConfirmation"
+    >
+      <section
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cancel-title"
+      >
+        <div class="modal-heading">
+          <div>
+            <span class="modal-eyebrow">APPOINTMENT MANAGEMENT</span>
+            <h2 id="cancel-title">Cancel Appointment</h2>
+          </div>
+
+          <button
+            type="button"
+            class="close-button"
+            aria-label="Close"
+            @click="closeCancelConfirmation"
+          >
+            ×
+          </button>
+        </div>
+
+        <p class="modal-description">
+          Are you sure you want to cancel the appointment for
+          <strong>{{ cancelTarget.student }}</strong>?
+          This action will mark the appointment as cancelled.
+        </p>
+
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="action-button secondary"
+            @click="closeCancelConfirmation"
+          >
+            Keep Appointment
+          </button>
+
+          <button
+            type="button"
+            class="action-button cancel"
+            @click="confirmCancellation"
+          >
+            Confirm Cancellation
+          </button>
+        </div>
       </section>
     </div>
 
@@ -228,14 +271,12 @@ function getLocalDate() {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
-
   return `${year}-${month}-${day}`
 }
 
 function addDays(dateString, amount) {
   const [year, month, day] = dateString.split('-').map(Number)
   const date = new Date(year, month - 1, day)
-
   date.setDate(date.getDate() + amount)
 
   return [
@@ -249,6 +290,7 @@ const todayISO = getLocalDate()
 const activeStatus = ref('All')
 const message = ref('')
 const rescheduleTarget = ref(null)
+const cancelTarget = ref(null)
 const newDate = ref('')
 const newTime = ref('')
 const formError = ref('')
@@ -364,7 +406,6 @@ function formatDate(value) {
 function formatTime(value) {
   const [hour, minute] = value.split(':').map(Number)
   const date = new Date()
-
   date.setHours(hour, minute, 0, 0)
 
   return date.toLocaleTimeString('en-US', {
@@ -381,15 +422,25 @@ function updateStatus(appointment, status) {
     : `${appointment.student}'s appointment has been completed.`
 }
 
-function cancelAppointment(appointment) {
-  if (!window.confirm(`Cancel the appointment for ${appointment.student}?`)) {
-    return
-  }
-
-  appointment.status = 'Cancelled'
-  message.value = `${appointment.id} has been cancelled.`
+/* Cancel confirmation popup */
+function openCancelConfirmation(appointment) {
+  cancelTarget.value = appointment
 }
 
+function closeCancelConfirmation() {
+  cancelTarget.value = null
+}
+
+function confirmCancellation() {
+  if (!cancelTarget.value) return
+
+  const appointment = cancelTarget.value
+  appointment.status = 'Cancelled'
+  message.value = `${appointment.id} has been cancelled.`
+  closeCancelConfirmation()
+}
+
+/* Reschedule popup */
 function openReschedule(appointment) {
   rescheduleTarget.value = appointment
   newDate.value = appointment.date
@@ -719,6 +770,7 @@ function saveReschedule() {
   line-height: 1.5;
 }
 
+/* Shared modal styling for Reschedule and Cancel */
 .modal-overlay {
   position: fixed;
   inset: 0;
