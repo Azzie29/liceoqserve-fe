@@ -30,7 +30,10 @@
       >
         <div class="appointment-main">
           <div class="appointment-topline">
-            <span class="appointment-id">{{ appointment.id }}</span>
+            <span class="appointment-id">
+              {{ appointment.id }}
+            </span>
+
             <span
               class="status-badge"
               :class="statusClass(appointment.status)"
@@ -46,10 +49,12 @@
               <span class="detail-icon">♙</span>
               {{ appointment.student }}
             </span>
+
             <span class="detail-item">
               <span class="detail-icon">▦</span>
               {{ formatDate(appointment.date) }}
             </span>
+
             <span class="detail-item">
               <span class="detail-icon">◷</span>
               {{ formatTime(appointment.time) }}
@@ -65,7 +70,7 @@
               v-if="appointment.status === 'Pending'"
               class="action-button primary"
               type="button"
-              @click="updateStatus(appointment, 'Confirmed')"
+              @click="updateStatus(appointment, 'confirmed')"
             >
               Confirm
             </button>
@@ -74,13 +79,13 @@
               v-if="appointment.status === 'Confirmed'"
               class="action-button primary"
               type="button"
-              @click="updateStatus(appointment, 'Completed')"
+              @click="updateStatus(appointment, 'completed')"
             >
               Mark Completed
             </button>
 
             <button
-              v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+              v-if="['Pending', 'Confirmed', 'Reschedule Requested'].includes(appointment.status)"
               class="action-button secondary"
               type="button"
               @click="openReschedule(appointment)"
@@ -89,7 +94,7 @@
             </button>
 
             <button
-              v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+              v-if="['Pending', 'Confirmed', 'Reschedule Requested'].includes(appointment.status)"
               class="action-button cancel"
               type="button"
               @click="openCancelConfirmation(appointment)"
@@ -177,15 +182,20 @@
             >
               Back
             </button>
-            <button type="submit" class="action-button primary">
-              Save Changes
+
+            <button
+              type="submit"
+              class="action-button primary"
+              :disabled="saving"
+            >
+              {{ saving ? 'Saving...' : 'Save Changes' }}
             </button>
           </div>
         </form>
       </section>
     </div>
 
-    <!-- Cancel appointment confirmation dialog -->
+    <!-- Cancel confirmation dialog -->
     <div
       v-if="cancelTarget"
       class="modal-overlay"
@@ -219,6 +229,10 @@
           This action will mark the appointment as cancelled.
         </p>
 
+        <p v-if="formError" class="form-error" role="alert">
+          {{ formError }}
+        </p>
+
         <div class="modal-actions">
           <button
             type="button"
@@ -231,9 +245,10 @@
           <button
             type="button"
             class="action-button cancel"
+            :disabled="saving"
             @click="confirmCancellation"
           >
-            Confirm Cancellation
+            {{ saving ? 'Saving...' : 'Confirm Cancellation' }}
           </button>
         </div>
       </section>
@@ -251,11 +266,23 @@
         ×
       </button>
     </div>
+
+    <div v-if="loading" class="loading-message">
+      Loading appointments...
+    </div>
+
+    <div v-if="loadError" class="load-error">
+      {{ loadError }}
+      <button type="button" @click="loadAppointments">
+        Retry
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { supabase } from '../../lib/supabase'
 
 const statuses = [
   'All',
@@ -263,7 +290,8 @@ const statuses = [
   'Confirmed',
   'Completed',
   'Cancelled',
-  'No-show'
+  'No-show',
+  'Reschedule Requested'
 ]
 
 function getLocalDate() {
@@ -271,26 +299,22 @@ function getLocalDate() {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
+
   return `${year}-${month}-${day}`
 }
 
-function addDays(dateString, amount) {
-  const [year, month, day] = dateString.split('-').map(Number)
-  const date = new Date(year, month - 1, day)
-  date.setDate(date.getDate() + amount)
-
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0')
-  ].join('-')
-}
-
 const todayISO = getLocalDate()
+
 const activeStatus = ref('All')
+const appointments = ref([])
 const message = ref('')
+const loading = ref(false)
+const saving = ref(false)
+const loadError = ref('')
+
 const rescheduleTarget = ref(null)
 const cancelTarget = ref(null)
+
 const newDate = ref('')
 const newTime = ref('')
 const formError = ref('')
@@ -305,72 +329,6 @@ const timeSlots = [
   '15:00', '15:30',
   '16:00'
 ]
-
-const appointments = ref([
-  {
-    id: 'APT-001',
-    student: 'Maria Santos',
-    service: 'Form 137',
-    date: todayISO,
-    time: '09:00',
-    status: 'Confirmed',
-    note: 'Academic records request'
-  },
-  {
-    id: 'APT-002',
-    student: 'Juan Dela Cruz',
-    service: 'Transcript of Records',
-    date: addDays(todayISO, 1),
-    time: '10:00',
-    status: 'Pending',
-    note: 'Document request'
-  },
-  {
-    id: 'APT-003',
-    student: 'Nina Reyes',
-    service: 'Certificate of Enrollment',
-    date: addDays(todayISO, 1),
-    time: '13:30',
-    status: 'Confirmed',
-    note: 'Enrollment verification'
-  },
-  {
-    id: 'APT-004',
-    student: 'Carlo Mendoza',
-    service: 'Good Moral Certificate',
-    date: addDays(todayISO, 2),
-    time: '09:30',
-    status: 'Pending',
-    note: 'Certificate request'
-  },
-  {
-    id: 'APT-005',
-    student: 'Eliza Flores',
-    service: 'Transcript of Records',
-    date: addDays(todayISO, -1),
-    time: '14:00',
-    status: 'Completed',
-    note: 'Academic records request'
-  },
-  {
-    id: 'APT-006',
-    student: 'Mark Ramos',
-    service: 'Student Record Inquiry',
-    date: addDays(todayISO, 2),
-    time: '10:30',
-    status: 'Cancelled',
-    note: ''
-  },
-  {
-    id: 'APT-007',
-    student: 'Grace Lim',
-    service: 'Certificate of Enrollment',
-    date: addDays(todayISO, -1),
-    time: '11:00',
-    status: 'No-show',
-    note: ''
-  }
-])
 
 const filteredAppointments = computed(() => {
   return appointments.value
@@ -393,10 +351,25 @@ function statusClass(status) {
   return status.toLowerCase().replace(/\s+/g, '-')
 }
 
-function formatDate(value) {
-  const [year, month, day] = value.split('-').map(Number)
+function displayStatus(status) {
+  const statusMap = {
+    pending: 'Pending',
+    confirmed: 'Confirmed',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    no_show: 'No-show',
+    reschedule_requested: 'Reschedule Requested'
+  }
 
-  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
+  return statusMap[status] || status
+}
+
+function formatDate(value) {
+  if (!value) return 'No date'
+
+  const date = new Date(value)
+
+  return date.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric'
@@ -404,8 +377,11 @@ function formatDate(value) {
 }
 
 function formatTime(value) {
+  if (!value) return 'No time'
+
   const [hour, minute] = value.split(':').map(Number)
   const date = new Date()
+
   date.setHours(hour, minute, 0, 0)
 
   return date.toLocaleTimeString('en-US', {
@@ -414,33 +390,147 @@ function formatTime(value) {
   })
 }
 
-function updateStatus(appointment, status) {
-  appointment.status = status
+function toLocalDateTime(value) {
+  const date = new Date(value)
 
-  message.value = status === 'Confirmed'
-    ? `${appointment.student}'s appointment has been confirmed.`
-    : `${appointment.student}'s appointment has been completed.`
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+
+  return {
+    date: `${year}-${month}-${day}`,
+    time: `${hours}:${minutes}`
+  }
 }
 
-/* Cancel confirmation popup */
+async function loadAppointments() {
+  loading.value = true
+  loadError.value = ''
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(`
+        id,
+        student_id,
+        service_id,
+        scheduled_at,
+        end_at,
+        status,
+        purpose,
+        student_notes,
+        staff_notes,
+        reschedule_requested_at,
+        profiles:student_id (
+          full_name
+        ),
+        office_services:service_id (
+          name
+        )
+      `)
+      .order('scheduled_at', { ascending: true })
+
+    if (error) throw error
+
+    appointments.value = (data || []).map(item => {
+      const schedule = toLocalDateTime(item.scheduled_at)
+
+      return {
+        id: item.id,
+        studentId: item.student_id,
+        serviceId: item.service_id,
+        student: item.profiles?.full_name || 'Unknown Student',
+        service: item.office_services?.name || 'Unknown Service',
+        date: schedule.date,
+        time: schedule.time,
+        status: displayStatus(item.status),
+        databaseStatus: item.status,
+        note: item.purpose || item.student_notes || '',
+        staffNotes: item.staff_notes || ''
+      }
+    })
+  } catch (error) {
+    console.error('Error loading appointments:', error)
+    loadError.value = error.message || 'Unable to load appointments.'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function updateStatus(appointment, newStatus) {
+  saving.value = true
+  loadError.value = ''
+
+  try {
+    const { error } = await supabase
+      .from('appointments')
+      .update({
+        status: newStatus,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', appointment.id)
+
+    if (error) throw error
+
+    appointment.databaseStatus = newStatus
+    appointment.status = displayStatus(newStatus)
+
+    message.value = newStatus === 'confirmed'
+      ? `${appointment.student}'s appointment has been confirmed.`
+      : `${appointment.student}'s appointment has been completed.`
+  } catch (error) {
+    console.error('Error updating appointment:', error)
+    message.value = ''
+    loadError.value = error.message || 'Unable to update appointment.'
+  } finally {
+    saving.value = false
+  }
+}
+
 function openCancelConfirmation(appointment) {
+  formError.value = ''
   cancelTarget.value = appointment
 }
 
 function closeCancelConfirmation() {
   cancelTarget.value = null
+  formError.value = ''
 }
 
-function confirmCancellation() {
-  if (!cancelTarget.value) return
+async function confirmCancellation() {
+  if (!cancelTarget.value || saving.value) return
+
+  saving.value = true
+  formError.value = ''
 
   const appointment = cancelTarget.value
-  appointment.status = 'Cancelled'
-  message.value = `${appointment.id} has been cancelled.`
-  closeCancelConfirmation()
+
+  try {
+    const { error } = await supabase
+      .from('appointments')
+      .update({
+        status: 'cancelled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', appointment.id)
+
+    if (error) throw error
+
+    appointment.databaseStatus = 'cancelled'
+    appointment.status = 'Cancelled'
+
+    message.value = `${appointment.id} has been cancelled.`
+    closeCancelConfirmation()
+  } catch (error) {
+    console.error('Error cancelling appointment:', error)
+    formError.value = error.message || 'Unable to cancel appointment.'
+  } finally {
+    saving.value = false
+  }
 }
 
-/* Reschedule popup */
 function openReschedule(appointment) {
   rescheduleTarget.value = appointment
   newDate.value = appointment.date
@@ -455,7 +545,7 @@ function closeReschedule() {
   formError.value = ''
 }
 
-function saveReschedule() {
+async function saveReschedule() {
   if (!rescheduleTarget.value || !newDate.value || !newTime.value) {
     formError.value = 'Please choose an appointment date and time.'
     return
@@ -466,27 +556,64 @@ function saveReschedule() {
     return
   }
 
-  const conflict = appointments.value.some(appointment =>
-    appointment.id !== rescheduleTarget.value.id &&
-    appointment.date === newDate.value &&
-    appointment.time === newTime.value &&
-    appointment.status === 'Confirmed'
+  const appointment = rescheduleTarget.value
+
+  const conflict = appointments.value.some(item =>
+    item.id !== appointment.id &&
+    item.date === newDate.value &&
+    item.time === newTime.value &&
+    ['Confirmed', 'Pending'].includes(item.status)
   )
 
   if (conflict) {
     formError.value =
-      'That time is already assigned to a confirmed appointment.'
+      'That time is already assigned to another active appointment.'
     return
   }
 
-  rescheduleTarget.value.date = newDate.value
-  rescheduleTarget.value.time = newTime.value
+  saving.value = true
+  formError.value = ''
 
-  message.value =
-    `${rescheduleTarget.value.student}'s appointment has been rescheduled.`
+  try {
+    const scheduledAt = new Date(
+      `${newDate.value}T${newTime.value}:00`
+    )
 
-  closeReschedule()
+    const endAt = new Date(scheduledAt.getTime() + 30 * 60 * 1000)
+
+    const { error } = await supabase
+      .from('appointments')
+      .update({
+        scheduled_at: scheduledAt.toISOString(),
+        end_at: endAt.toISOString(),
+        status: 'reschedule_requested',
+        reschedule_requested_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', appointment.id)
+
+    if (error) throw error
+
+    appointment.date = newDate.value
+    appointment.time = newTime.value
+    appointment.databaseStatus = 'reschedule_requested'
+    appointment.status = 'Reschedule Requested'
+
+    message.value =
+      `${appointment.student}'s appointment schedule has been updated.`
+
+    closeReschedule()
+  } catch (error) {
+    console.error('Error rescheduling appointment:', error)
+    formError.value = error.message || 'Unable to reschedule appointment.'
+  } finally {
+    saving.value = false
+  }
 }
+
+onMounted(() => {
+  loadAppointments()
+})
 </script>
 
 <style scoped>
@@ -645,6 +772,11 @@ function saveReschedule() {
   color: #895334;
 }
 
+.status-badge.reschedule-requested {
+  background: #e8e1f4;
+  color: #654a91;
+}
+
 .appointment-main h2 {
   margin: 0 0 12px;
   color: #50070e;
@@ -703,6 +835,11 @@ function saveReschedule() {
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s;
+}
+
+.action-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .action-button.primary {
@@ -770,7 +907,7 @@ function saveReschedule() {
   line-height: 1.5;
 }
 
-/* Shared modal styling for Reschedule and Cancel */
+/* Shared modal styling */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -858,7 +995,8 @@ function saveReschedule() {
   outline-color: #9b515a;
 }
 
-.form-error {
+.form-error,
+.load-error {
   margin: 12px 0 0;
   padding: 10px;
   border-radius: 6px;
@@ -912,6 +1050,21 @@ function saveReschedule() {
   background: transparent;
   color: #66806d;
   font-size: 20px;
+  cursor: pointer;
+}
+
+.loading-message {
+  padding: 20px;
+  color: #887477;
+  text-align: center;
+}
+
+.load-error button {
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  color: #650b18;
+  font-weight: 700;
   cursor: pointer;
 }
 

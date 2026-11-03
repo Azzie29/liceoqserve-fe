@@ -6,7 +6,6 @@
       <p>Staff information is managed by the university and is read-only.</p>
     </div>
 
-    <!-- STAFF PROFILE -->
     <section class="profile-card">
       <div class="profile-banner">
         <div class="avatar">{{ initials }}</div>
@@ -49,7 +48,6 @@
       </div>
     </section>
 
-    <!-- CHANGE PASSWORD -->
     <section v-if="showPasswordForm" class="password-card">
       <div class="password-heading">
         <h3>Change Password</h3>
@@ -97,8 +95,8 @@
         </p>
 
         <div class="form-actions">
-          <button class="update-button" type="submit">
-            Update password
+          <button class="update-button" type="submit" :disabled="isUpdatingPassword">
+            {{ isUpdatingPassword ? 'Updating...' : 'Update password' }}
           </button>
           <button class="cancel-button" type="button" @click="cancelPasswordChange">
             Cancel
@@ -107,7 +105,6 @@
       </form>
     </section>
 
-    <!-- LOGOUT MODAL -->
     <Teleport to="body">
       <div
         v-if="showLogoutModal"
@@ -139,9 +136,10 @@
             <button
               class="confirm-logout-btn"
               type="button"
+              :disabled="isLoggingOut"
               @click="confirmLogout"
             >
-              Yes, log out
+              {{ isLoggingOut ? 'Logging out...' : 'Yes, log out' }}
             </button>
           </div>
         </section>
@@ -153,38 +151,90 @@
 <script setup>
 import { computed, reactive, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { supabase } from '../../lib/supabase'
 
 const router = useRouter()
 
 const staff = ref({
-  name: 'Michelle Sy',
+  name: '',
   position: 'Registrar',
-  employeeId: 'LDCU-1048',
-  email: 'registrar@liceo.edu.ph',
-  office: 'Registrar',
-  role: 'Authorized Staff',
-  status: 'Active',
+  employeeId: 'Not available',
+  email: '',
+  office: 'Loading...',
+  role: 'Staff',
+  status: 'Loading...',
 })
 
 const initials = computed(() =>
   staff.value.name
     .trim()
     .split(/\s+/)
+    .filter(Boolean)
     .map((part) => part[0])
     .join('')
     .slice(0, 2)
     .toUpperCase()
 )
 
-// Password form
 const showPasswordForm = ref(false)
 const passwordMessage = ref('')
+const isUpdatingPassword = ref(false)
 
 const passwords = reactive({
   current: '',
   new: '',
   confirm: '',
 })
+
+const showLogoutModal = ref(false)
+const isLoggingOut = ref(false)
+
+async function loadStaffProfile() {
+  const { data: authData, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !authData.user) {
+    staff.value.status = 'Not signed in'
+    return
+  }
+
+  const user = authData.user
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select(`
+      id,
+      student_id,
+      full_name,
+      university_email,
+      role,
+      is_active,
+      office_id,
+      offices (
+        name
+      )
+    `)
+    .eq('id', user.id)
+    .single()
+
+  if (error) {
+    console.error('Error loading staff profile:', error.message)
+    staff.value.name = user.user_metadata?.full_name || 'Staff'
+    staff.value.email = user.email || ''
+    staff.value.status = 'Unable to load'
+    staff.value.office = 'Not available'
+    return
+  }
+
+  staff.value = {
+    name: data.full_name || 'Staff',
+    position: data.role === 'staff' ? 'Registrar' : data.role || 'Staff',
+    employeeId: data.student_id || 'Not available',
+    email: data.university_email || user.email || 'Not available',
+    office: data.offices?.name || 'Not assigned',
+    role: data.role || 'Staff',
+    status: data.is_active ? 'Active' : 'Inactive',
+  }
+}
 
 function cancelPasswordChange() {
   showPasswordForm.value = false
@@ -194,7 +244,7 @@ function cancelPasswordChange() {
   passwords.confirm = ''
 }
 
-function updatePassword() {
+async function updatePassword() {
   passwordMessage.value = ''
 
   if (passwords.new !== passwords.confirm) {
@@ -207,12 +257,48 @@ function updatePassword() {
     return
   }
 
-  passwordMessage.value =
-    'Password change is not connected to the server yet.'
-}
+  if (passwords.current === passwords.new) {
+    passwordMessage.value = 'Your new password must be different from your current password.'
+    return
+  }
 
-// Logout modal: can be opened by the sidebar event
-const showLogoutModal = ref(false)
+  isUpdatingPassword.value = true
+
+  try {
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !authData.user?.email) {
+      passwordMessage.value = 'Unable to verify your account. Please sign in again.'
+      return
+    }
+
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email: authData.user.email,
+      password: passwords.current,
+    })
+
+    if (verifyError) {
+      passwordMessage.value = 'Your current password is incorrect.'
+      return
+    }
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: passwords.new,
+    })
+
+    if (updateError) {
+      passwordMessage.value = updateError.message
+      return
+    }
+
+    cancelPasswordChange()
+    passwordMessage.value = 'Password updated successfully.'
+  } catch (error) {
+    passwordMessage.value = error.message || 'Unable to update password.'
+  } finally {
+    isUpdatingPassword.value = false
+  }
+}
 
 function openLogoutModal() {
   showLogoutModal.value = true
@@ -225,6 +311,8 @@ function handleEscape(event) {
 }
 
 onMounted(() => {
+  loadStaffProfile()
+
   window.addEventListener('open-logout-modal', openLogoutModal)
   window.addEventListener('keydown', handleEscape)
 })
@@ -234,13 +322,23 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleEscape)
 })
 
-function confirmLogout() {
+async function confirmLogout() {
+  isLoggingOut.value = true
+
+  const { error } = await supabase.auth.signOut()
+
+  if (error) {
+    console.error('Logout error:', error.message)
+    isLoggingOut.value = false
+    return
+  }
+
   localStorage.removeItem('token')
   localStorage.removeItem('user')
   sessionStorage.clear()
 
   showLogoutModal.value = false
-  router.push('/')
+  await router.push('/')
 }
 </script>
 
@@ -260,25 +358,24 @@ function confirmLogout() {
 }
 
 .page-heading {
-  margin-bottom: 8px;
+  margin-bottom: 22px;
 }
 
 .page-heading h2 {
-  margin: 0 0 6px;
-  color: #35090d;
+  margin: 0 0 8px;
+  color: #50070e;
   font-family: Georgia, 'Times New Roman', serif;
-  font-size: 20px;
+  font-size: 30px;
   font-weight: 500;
 }
 
 .page-heading p {
   margin: 0;
-  color: #4c292b;
-  font-size: 10px;
+  color: #887477;
+  font-size: 15px;
   line-height: 1.5;
 }
 
-/* Profile */
 .profile-card {
   width: 100%;
   overflow: hidden;
@@ -366,7 +463,6 @@ function confirmLogout() {
   cursor: pointer;
 }
 
-/* Password form */
 .password-card {
   margin-top: 16px;
   overflow: hidden;
@@ -442,7 +538,12 @@ function confirmLogout() {
   cursor: pointer;
 }
 
-/* Logout overlay and modal */
+.update-button:disabled,
+.confirm-logout-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

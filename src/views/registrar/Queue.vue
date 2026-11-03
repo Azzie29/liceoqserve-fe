@@ -1,3 +1,231 @@
+
+<script setup>
+import { ref, onMounted } from 'vue'
+import { supabase } from '../../lib/supabase'
+
+const loading = ref(false)
+const currentTicket = ref({})
+const waiting = ref([])
+const studentArrived = ref(false)
+const message = ref('')
+
+function getTodayDate() {
+  const today = new Date()
+
+  return [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+function formatQueueNumber(number) {
+  return `R-${String(number).padStart(3, '0')}`
+}
+
+async function fetchQueue() {
+  loading.value = true
+  message.value = ''
+
+  try {
+    const { data: queueData, error: queueError } = await supabase
+      .from('queues')
+      .select(`
+        id,
+        student_id,
+        service_id,
+        queue_number,
+        queue_date,
+        counter_name,
+        status,
+        recall_count,
+        arrival_confirmed_at,
+        called_at,
+        finished_at
+      `)
+      .eq('queue_date', getTodayDate())
+      .neq('status', 'cancelled')
+      .order('queue_number', { ascending: true })
+
+    if (queueError) throw queueError
+
+    const records = queueData || []
+
+    if (records.length === 0) {
+      currentTicket.value = {}
+      waiting.value = []
+      studentArrived.value = false
+      return
+    }
+
+    const studentIds = [
+      ...new Set(records.map(item => item.student_id).filter(Boolean)),
+    ]
+
+    let students = []
+
+    if (studentIds.length) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .in('id', studentIds)
+
+      if (error) throw error
+      students = data || []
+    }
+
+    const serviceIds = [
+      ...new Set(records.map(item => item.service_id).filter(Boolean)),
+    ]
+
+    let services = []
+
+    if (serviceIds.length) {
+      const { data, error } = await supabase
+        .from('office_services')
+        .select('id, name')
+        .in('id', serviceIds)
+
+      if (error) throw error
+      services = data || []
+    }
+
+    const studentMap = Object.fromEntries(
+      students.map(student => [student.id, student.full_name])
+    )
+
+    const serviceMap = Object.fromEntries(
+      services.map(service => [service.id, service.name])
+    )
+
+    const formattedRecords = records.map(record => ({
+      ...record,
+      number: formatQueueNumber(record.queue_number),
+      name: studentMap[record.student_id] || 'Unknown Student',
+      service: serviceMap[record.service_id] || 'Unknown Service',
+    }))
+
+    const activeTicket = formattedRecords.find(
+      ticket => ticket.called_at && !ticket.finished_at
+    )
+
+    currentTicket.value = activeTicket || {}
+
+    studentArrived.value = Boolean(
+      activeTicket?.arrival_confirmed_at
+    )
+
+    waiting.value = formattedRecords.filter(
+      ticket => ticket.status === 'waiting'
+    )
+  } catch (error) {
+    console.error('Error loading queue:', error)
+    message.value = error.message || 'Unable to load queue records.'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function markArrived() {
+  if (!currentTicket.value.id) return
+
+  loading.value = true
+  message.value = ''
+
+  try {
+    const { error } = await supabase
+      .from('queues')
+      .update({
+        arrival_confirmed_at: new Date().toISOString(),
+      })
+      .eq('id', currentTicket.value.id)
+
+    if (error) throw error
+
+    message.value = `${currentTicket.value.name} has been marked as arrived.`
+
+    await fetchQueue()
+  } catch (error) {
+    console.error('Error marking student as arrived:', error)
+    message.value = error.message || 'Unable to update arrival status.'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function callNext() {
+  if (!waiting.value.length) {
+    message.value = 'There are no students waiting.'
+    return
+  }
+
+  const next = waiting.value[0]
+
+  loading.value = true
+  message.value = ''
+
+  try {
+    const { error } = await supabase
+      .from('queues')
+      .update({
+        status: 'serving',
+        called_at: new Date().toISOString(),
+      })
+      .eq('id', next.id)
+      .eq('status', 'waiting')
+
+    if (error) throw error
+
+    message.value = `${next.number} is now being served.`
+
+    await fetchQueue()
+  } catch (error) {
+    console.error('Error calling next student:', error)
+    message.value = error.message || 'Unable to call the next student.'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function completeAndNext() {
+  if (!currentTicket.value.id) return
+
+  const completedNumber = currentTicket.value.number
+
+  loading.value = true
+  message.value = ''
+
+  try {
+    const { error } = await supabase
+      .from('queues')
+      .update({
+        status: 'completed',
+        finished_at: new Date().toISOString(),
+      })
+      .eq('id', currentTicket.value.id)
+
+    if (error) throw error
+
+    await fetchQueue()
+
+    if (waiting.value.length > 0) {
+      await callNext()
+    } else {
+      message.value = `${completedNumber} completed. No more students are waiting.`
+    }
+  } catch (error) {
+    console.error('Error completing queue ticket:', error)
+    message.value = error.message || 'Unable to complete the ticket.'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchQueue()
+})
+</script>
+
 <template>
   <section class="queue-page">
     <div class="page-heading">
@@ -9,8 +237,13 @@
 
     <!-- NOW SERVING -->
     <section class="current-ticket">
-      <span class="serving-label">Being Served</span>
-      <strong class="ticket-number">{{ currentTicket.number || '—' }}</strong>
+      <span class="serving-label">
+        {{ currentTicket.id ? 'Being Served' : 'Now Serving' }}
+      </span>
+
+      <strong class="ticket-number">
+        {{ currentTicket.number || '—' }}
+      </strong>
 
       <div class="student-details">
         <strong>{{ currentTicket.name || 'No active student' }}</strong>
@@ -21,7 +254,7 @@
         <button
           class="arrived-button"
           :class="{ arrived: studentArrived }"
-          :disabled="!currentTicket.number || studentArrived"
+          :disabled="!currentTicket.id || studentArrived || loading"
           @click="markArrived"
         >
           {{ studentArrived ? '✓ Student arrived' : 'Student arrived' }}
@@ -29,10 +262,10 @@
 
         <button
           class="auto-next-button"
-          :disabled="!currentTicket.number"
-          @click="completeAndNext"
+          :disabled="(!currentTicket.id && !waiting.length) || loading"
+          @click="currentTicket.id ? completeAndNext() : callNext()"
         >
-          Complete &amp; auto-next
+          {{ currentTicket.id ? 'Complete & auto-next' : 'Call next student' }}
         </button>
       </div>
     </section>
@@ -45,137 +278,85 @@
     <section class="queue-list-panel">
       <div class="queue-list-heading">
         <h3>Queue List</h3>
-        <span>{{ waiting.length + (currentTicket.number ? 1 : 0) }} waiting</span>
+        <span>{{ waiting.length }} waiting</span>
       </div>
 
       <div class="queue-list">
-        <article
-          v-if="currentTicket.number"
-          class="queue-row current-row"
-        >
-          <div class="student-info">
-            <strong>{{ currentTicket.name }}</strong>
-            <span>{{ currentTicket.service }}</span>
-          </div>
-          <span class="status-pill in-progress">In Progress</span>
-        </article>
-
-        <article
-          v-for="ticket in waiting"
-          :key="ticket.number"
-          class="queue-row"
-        >
-          <div class="student-info">
-            <strong>{{ ticket.name }}</strong>
-            <span>{{ ticket.service }}</span>
-          </div>
-          <span class="status-pill waiting-status">Waiting</span>
-        </article>
-
-        <div v-if="!currentTicket.number && !waiting.length" class="empty-state">
-          No students are currently in the queue.
+        <div v-if="loading" class="empty-state">
+          Loading queue...
         </div>
+
+        <template v-else>
+          <article
+            v-if="currentTicket.id"
+            class="queue-row current-row"
+          >
+            <div class="student-info">
+              <strong>{{ currentTicket.name }}</strong>
+              <span>{{ currentTicket.service }}</span>
+            </div>
+            <span class="status-pill in-progress">In Progress</span>
+          </article>
+
+          <article
+            v-for="ticket in waiting"
+            :key="ticket.id"
+            class="queue-row"
+          >
+            <div class="student-info">
+              <strong>{{ ticket.name }}</strong>
+              <span>{{ ticket.service }}</span>
+            </div>
+            <span class="status-pill waiting-status">Waiting</span>
+          </article>
+
+          <div v-if="!currentTicket.id && !waiting.length" class="empty-state">
+            No students are currently in the queue.
+          </div>
+        </template>
       </div>
     </section>
 
     <div class="queue-footer">
       <span>Authorized registrar staff only</span>
-      <button class="reset-button" @click="resetQueue">Reset demo queue</button>
+      <button class="reset-button" @click="fetchQueue" :disabled="loading">
+        {{ loading ? 'Refreshing...' : 'Refresh queue' }}
+      </button>
     </div>
   </section>
 </template>
-
-<script setup>
-import { ref } from 'vue'
-
-const initialCurrent = {
-  number: 'R-001',
-  name: 'Maria Santos',
-  service: 'Form 137',
-}
-
-const initialWaiting = [
-  { number: 'R-002', name: 'Juan dela Cruz', service: 'Transcript of Records' },
-  { number: 'R-003', name: 'Nina Reyes', service: 'Certificate Request' },
-  { number: 'R-004', name: 'Carlo Mendoza', service: 'Clearance · Representative' },
-  { number: 'R-005', name: 'Eliza Flores', service: 'Other Registrar Document' },
-  { number: 'R-006', name: 'Mark Ramos', service: 'Form 137' },
-  { number: 'R-007', name: 'Grace Lim', service: 'Transcript of Records' },
-  { number: 'R-008', name: 'Angela Dizon', service: 'Certificate of Enrollment' },
-  { number: 'R-009', name: 'Paolo Garcia', service: 'Good Moral Certificate' },
-  { number: 'R-010', name: 'Sofia Villanueva', service: 'Student Record Inquiry' },
-  { number: 'R-011', name: 'Daniel Bautista', service: 'Transcript of Records' },
-]
-
-const currentTicket = ref({ ...initialCurrent })
-const waiting = ref(initialWaiting.map(ticket => ({ ...ticket })))
-const studentArrived = ref(false)
-const message = ref('')
-const recalls = ref(0)
-
-function markArrived() {
-  if (!currentTicket.value.number) return
-
-  studentArrived.value = true
-  message.value = `${currentTicket.value.name} has been marked as arrived.`
-}
-
-function completeAndNext() {
-  if (!currentTicket.value.number) {
-    message.value = 'There is no active ticket to complete.'
-    return
-  }
-
-  const completedNumber = currentTicket.value.number
-  const next = waiting.value.shift()
-
-  if (next) {
-    currentTicket.value = { ...next }
-    studentArrived.value = false
-    recalls.value = 0
-    message.value = `${completedNumber} completed. ${next.number} is now being served.`
-  } else {
-    currentTicket.value = { number: '', name: '', service: '' }
-    studentArrived.value = false
-    recalls.value = 0
-    message.value = `${completedNumber} completed. No more students are waiting.`
-  }
-}
-
-function resetQueue() {
-  currentTicket.value = { ...initialCurrent }
-  waiting.value = initialWaiting.map(ticket => ({ ...ticket }))
-  studentArrived.value = false
-  recalls.value = 0
-  message.value = 'Demo queue has been reset.'
-}
-</script>
 
 <style scoped>
 .queue-page {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
   min-width: 0;
+  margin: 0;
+  padding: 3px 2px 24px;
   color: #300b0e;
 }
 
 .page-heading {
-  padding: 0 0 2px;
+  margin: 0;
+  padding: 0;
 }
 
 .page-heading h2 {
-  margin: 0 0 5px;
-  color: #350a0d;
+  margin: 0;
+  color: #50070e;
   font-family: Georgia, 'Times New Roman', serif;
-  font-size: 27px;
+  font-size: 30px;
   font-weight: 500;
+  line-height: 1.2;
 }
 
 .page-heading p {
-  margin: 0;
-  color: #5f4143;
-  font-size: 12px;
+  margin: 7px 0 0;
+  color: #887477;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .current-ticket {
@@ -185,7 +366,7 @@ function resetQueue() {
   align-items: center;
   justify-content: center;
   padding: 22px 18px 17px;
-  border-radius: 0 20px 20px 0;
+  border-radius: 20px;
   background: #50070e;
   color: #fff;
   text-align: center;
@@ -401,9 +582,14 @@ function resetQueue() {
   background: #f1e1e2;
 }
 
+.reset-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 @media (max-width: 600px) {
   .page-heading h2 {
-    font-size: 23px;
+    font-size: 30px;
   }
 
   .current-ticket {

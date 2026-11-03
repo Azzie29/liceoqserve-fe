@@ -1,4 +1,3 @@
-
 <template>
   <aside class="sidebar">
     <div class="brand">
@@ -62,8 +61,9 @@
             <button
               class="confirm-button"
               @click="confirmLogout"
+              :disabled="isLoggingOut"
             >
-              Yes, log out
+              {{ isLoggingOut ? 'Logging out...' : 'Yes, log out' }}
             </button>
           </div>
         </section>
@@ -75,9 +75,12 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { supabase } from '../lib/supabase'
 
 const router = useRouter()
+
 const showLogoutModal = ref(false)
+const isLoggingOut = ref(false)
 
 const menuItems = [
   { label: 'HOME', path: '/registrar/dashboard' },
@@ -95,12 +98,32 @@ function openLogoutModal() {
 }
 
 function closeLogoutModal() {
+  if (isLoggingOut.value) return
   showLogoutModal.value = false
 }
 
-function confirmLogout() {
-  showLogoutModal.value = false
-  router.push('/')
+async function confirmLogout() {
+  if (isLoggingOut.value) return
+
+  isLoggingOut.value = true
+
+  try {
+    const { error } = await supabase.auth.signOut()
+
+    if (error) {
+      console.error('Logout failed:', error.message)
+      alert('Unable to log out. Please try again.')
+      return
+    }
+
+    showLogoutModal.value = false
+    router.replace('/staff/login')
+  } catch (error) {
+    console.error('Unexpected logout error:', error)
+    alert('An unexpected error occurred. Please try again.')
+  } finally {
+    isLoggingOut.value = false
+  }
 }
 </script>
 
@@ -190,6 +213,11 @@ function confirmLogout() {
   background: #ead7d9;
 }
 
+.logout-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Modal overlay */
 .modal-overlay {
   position: fixed;
@@ -270,6 +298,11 @@ function confirmLogout() {
 
 .confirm-button:hover {
   background: #650b18;
+}
+
+.confirm-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 @media (max-width: 760px) {

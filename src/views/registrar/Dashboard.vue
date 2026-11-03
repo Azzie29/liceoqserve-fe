@@ -1,8 +1,9 @@
+
 <template>
   <section class="dashboard-page">
     <!-- Dashboard heading banner -->
     <header class="dashboard-banner">
-      <p class="banner-date">Friday, October 1, 2026</p>
+      <p class="banner-date">{{ currentDate }}</p>
       <h1>Registrar Dashboard</h1>
       <p class="banner-description">
         Review today’s workload and continue the next transaction.
@@ -13,7 +14,7 @@
     <section class="stats-grid">
       <article class="stat-card">
         <p class="stat-label">WAITING</p>
-        <h2>6</h2>
+        <h2>{{ waitingCount }}</h2>
         <button class="details-link" @click="goTo('/registrar/queue')">
           View details
         </button>
@@ -21,7 +22,7 @@
 
       <article class="stat-card">
         <p class="stat-label">TODAY’S APPOINTMENT</p>
-        <h2>1</h2>
+        <h2>{{ appointmentCount }}</h2>
         <button
           class="details-link"
           @click="goTo('/registrar/appointments')"
@@ -32,7 +33,7 @@
 
       <article class="stat-card">
         <p class="stat-label">PENDING REQUESTS</p>
-        <h2>1</h2>
+        <h2>{{ pendingRequestCount }}</h2>
         <button class="details-link" @click="goTo('/registrar/requests')">
           View details
         </button>
@@ -40,7 +41,7 @@
 
       <article class="stat-card">
         <p class="stat-label">READY FOR PICKUP</p>
-        <h2>1</h2>
+        <h2>{{ readyForPickupCount }}</h2>
         <button class="details-link" @click="goTo('/registrar/requests')">
           View details
         </button>
@@ -53,7 +54,11 @@
       <article class="content-panel appointment-panel">
         <h2>Registrar Dashboard</h2>
 
-        <div v-if="appointment" class="appointment-row">
+        <div v-if="loading" class="empty-state">
+          Loading appointments...
+        </div>
+
+        <div v-else-if="appointment" class="appointment-row">
           <span class="appointment-time">{{ appointment.time }}</span>
 
           <div class="appointment-information">
@@ -61,8 +66,11 @@
             <p class="secondary-text">{{ appointment.service }}</p>
           </div>
 
-          <span class="status-pill confirmed">
-            {{ appointment.status }}
+          <span
+            class="status-pill"
+            :class="statusClass(appointment.status)"
+          >
+            {{ formatStatus(appointment.status) }}
           </span>
         </div>
 
@@ -75,62 +83,126 @@
       <article class="content-panel recent-work-panel">
         <h2>Recent Work</h2>
 
-        <div
-          v-for="request in recentWork"
-          :key="request.id"
-          class="recent-work-row"
-          @click="openRequests"
-        >
-          <div class="request-information">
-            <p class="person-name">
-              {{ request.name }} · {{ request.service }}
-            </p>
-            <p class="secondary-text">{{ request.id }}</p>
+        <div v-if="loading" class="empty-state">
+          Loading recent work...
+        </div>
+
+        <template v-else>
+          <div
+            v-for="request in recentWork"
+            :key="request.id"
+            class="recent-work-row"
+            @click="openRequests"
+          >
+            <div class="request-information">
+              <p class="person-name">
+                {{ request.name }} · {{ request.service }}
+              </p>
+              <p class="secondary-text">{{ request.id }}</p>
+            </div>
+
+            <span
+              class="status-pill"
+              :class="statusClass(request.status)"
+            >
+              {{ formatStatus(request.status) }}
+            </span>
           </div>
 
-          <span
-            class="status-pill"
-            :class="statusClass(request.status)"
-          >
-            {{ request.status }}
-          </span>
-        </div>
-
-        <div v-if="recentWork.length === 0" class="empty-state">
-          No recent requests to display.
-        </div>
+          <div v-if="recentWork.length === 0" class="empty-state">
+            No recent requests to display.
+          </div>
+        </template>
       </article>
     </section>
   </section>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { supabase } from '../../lib/supabase'
 
 const router = useRouter()
 
-const appointment = ref({
-  time: '10:30 AM',
-  name: 'Angel Dadole',
-  service: 'Transcript of Records',
-  status: 'Confirmed',
-})
+const loading = ref(true)
 
-const recentWork = ref([
-  {
-    id: 'REQ-2026-00125',
-    name: 'Juan Dela Cruz',
-    service: 'Form 137',
-    status: 'Processing',
-  },
-  {
-    id: 'REQ-2026-00126',
-    name: 'Maria Santos',
-    service: 'Good Moral Certificate',
-    status: 'Ready For Pickup',
-  },
-])
+const waitingCount = ref(0)
+const appointmentCount = ref(0)
+
+// These remain zero until a document-request table is available.
+const pendingRequestCount = ref(0)
+const readyForPickupCount = ref(0)
+
+const appointment = ref(null)
+const recentWork = ref([])
+
+const currentDate = ref(
+  new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+)
+
+// Get today's date boundaries using the user's local timezone.
+function getTodayBounds() {
+  const now = new Date()
+
+  const start = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  )
+
+  const end = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1
+  )
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  }
+}
+
+function formatTime(dateString) {
+  return new Date(dateString).toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function formatStatus(status) {
+  if (!status) return 'Unknown'
+
+  return status
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase())
+}
+
+function statusClass(status) {
+  const normalized = (status || '').toLowerCase()
+
+  if (
+    normalized.includes('ready') ||
+    normalized.includes('completed') ||
+    normalized.includes('confirmed')
+  ) {
+    return 'ready'
+  }
+
+  if (
+    normalized.includes('processing') ||
+    normalized.includes('reschedule')
+  ) {
+    return 'processing'
+  }
+
+  return 'default-status'
+}
 
 function goTo(path) {
   router.push(path)
@@ -140,23 +212,123 @@ function openRequests() {
   router.push('/registrar/requests')
 }
 
-function statusClass(status) {
-  const normalized = status.toLowerCase()
+// Fetch today's waiting queue count.
+async function fetchWaitingCount() {
+  const today = new Date()
+  const queueDate = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-')
 
-  if (normalized.includes('ready') || normalized.includes('completed')) {
-    return 'ready'
+  const { count, error } = await supabase
+    .from('queues')
+    .select('*', { count: 'exact', head: true })
+    .eq('queue_date', queueDate)
+    .eq('status', 'waiting')
+
+  if (error) {
+    console.error('Error loading waiting queue count:', error)
+    return
   }
 
-  if (normalized.includes('confirmed')) {
-    return 'confirmed'
-  }
-
-  if (normalized.includes('processing')) {
-    return 'processing'
-  }
-
-  return 'default-status'
+  waitingCount.value = count || 0
 }
+
+// Fetch today's appointments.
+async function fetchAppointments() {
+  const { start, end } = getTodayBounds()
+
+  const { data, error } = await supabase
+    .from('appointments')
+    .select(`
+      id,
+      student_id,
+      service_id,
+      scheduled_at,
+      status,
+      purpose
+    `)
+    .gte('scheduled_at', start)
+    .lt('scheduled_at', end)
+    .not('status', 'in', '("cancelled","completed","no_show")')
+    .order('scheduled_at', { ascending: true })
+
+  if (error) {
+    console.error('Error loading appointments:', error)
+    return
+  }
+
+  appointmentCount.value = data?.length || 0
+
+  if (!data || data.length === 0) {
+    appointment.value = null
+    return
+  }
+
+  // Display the earliest appointment scheduled for today.
+  const firstAppointment = data[0]
+
+  let studentName = 'Unknown Student'
+  let serviceName = firstAppointment.purpose || 'Appointment'
+
+  // Get student name from profiles.
+  if (firstAppointment.student_id) {
+    const { data: student, error: studentError } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', firstAppointment.student_id)
+      .maybeSingle()
+
+    if (studentError) {
+      console.error('Error loading appointment student:', studentError)
+    } else if (student?.full_name) {
+      studentName = student.full_name
+    }
+  }
+
+  // Get service name from office_services.
+  if (firstAppointment.service_id) {
+    const { data: service, error: serviceError } = await supabase
+      .from('office_services')
+      .select('name')
+      .eq('id', firstAppointment.service_id)
+      .maybeSingle()
+
+    if (serviceError) {
+      console.error('Error loading appointment service:', serviceError)
+    } else if (service?.name) {
+      serviceName = service.name
+    }
+  }
+
+  appointment.value = {
+    time: formatTime(firstAppointment.scheduled_at),
+    name: studentName,
+    service: serviceName,
+    status: firstAppointment.status,
+  }
+}
+
+// Load dashboard information.
+async function loadDashboard() {
+  loading.value = true
+
+  try {
+    await Promise.all([
+      fetchWaitingCount(),
+      fetchAppointments(),
+    ])
+  } catch (error) {
+    console.error('Dashboard loading error:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  loadDashboard()
+})
 </script>
 
 <style scoped>

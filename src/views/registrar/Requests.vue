@@ -6,7 +6,6 @@
       <p>Update status, expected completion, and transaction-specific instructions.</p>
     </div>
 
-    <!-- Status filters -->
     <div class="status-filters">
       <button
         v-for="status in statuses"
@@ -24,7 +23,6 @@
       </button>
     </div>
 
-    <!-- Sort controls -->
     <div class="sort-row">
       <label for="request-sort">Sort by</label>
       <select id="request-sort" v-model="sortBy">
@@ -34,7 +32,6 @@
       </select>
     </div>
 
-    <!-- Request list and details -->
     <section class="requests-layout">
       <div class="request-list-panel">
         <div class="panel-heading">
@@ -43,52 +40,62 @@
         </div>
 
         <div class="request-list">
-          <article
-            v-for="request in filteredRequests"
-            :key="request.id"
-            class="request-card"
-            :class="{ selected: selectedRequest?.id === request.id }"
-            role="button"
-            tabindex="0"
-            @click="selectRequest(request)"
-            @keydown.enter="selectRequest(request)"
-            @keydown.space.prevent="selectRequest(request)"
-          >
-            <div class="request-topline">
-              <span class="request-student">{{ request.studentName }}</span>
-              <span
-                class="status-badge"
-                :class="statusClass(request.status)"
-              >
-                {{ request.status }}
-              </span>
-            </div>
+          <div v-if="loading" class="empty-state">
+            <p>Loading requests...</p>
+          </div>
 
-            <p class="request-description">
-              {{ request.id }} · {{ request.documentType }}
-            </p>
-
-            <p class="request-date">
-              Expected: {{ formatDate(request.expectedCompletion) }}
-            </p>
-          </article>
-
-          <div v-if="filteredRequests.length === 0" class="empty-state">
-            <div class="empty-symbol">▦</div>
-            <h2>No requests found</h2>
-            <p>There are no requests under this status.</p>
-            <button
-              type="button"
-              class="action-button secondary"
-              @click="activeStatus = 'All'"
-            >
-              View All Requests
+          <div v-else-if="loadError" class="empty-state">
+            <h2>Unable to load requests</h2>
+            <p>{{ loadError }}</p>
+            <button class="action-button secondary" @click="loadRequests">
+              Try Again
             </button>
           </div>
+
+          <template v-else>
+            <article
+              v-for="request in filteredRequests"
+              :key="request.id"
+              class="request-card"
+              :class="{ selected: selectedRequest?.id === request.id }"
+              role="button"
+              tabindex="0"
+              @click="selectRequest(request)"
+              @keydown.enter="selectRequest(request)"
+              @keydown.space.prevent="selectRequest(request)"
+            >
+              <div class="request-topline">
+                <span class="request-student">{{ request.studentName }}</span>
+                <span class="status-badge" :class="statusClass(request.status)">
+                  {{ request.status }}
+                </span>
+              </div>
+
+              <p class="request-description">
+                {{ request.id }} · {{ request.documentType }}
+              </p>
+
+              <p class="request-date">
+                Expected: {{ formatDate(request.expectedCompletion) }}
+              </p>
+            </article>
+
+            <div v-if="filteredRequests.length === 0" class="empty-state">
+              <div class="empty-symbol">▦</div>
+              <h2>No requests found</h2>
+              <p>There are no requests under this status.</p>
+              <button
+                type="button"
+                class="action-button secondary"
+                @click="activeStatus = 'All'"
+              >
+                View All Requests
+              </button>
+            </div>
+          </template>
         </div>
       </div>
 
-      <!-- Request details -->
       <div class="request-details-panel">
         <template v-if="selectedRequest">
           <div class="details-topline">
@@ -210,9 +217,10 @@
             <button
               type="button"
               class="action-button primary"
+              :disabled="saving"
               @click="saveChanges"
             >
-              Save Changes
+              {{ saving ? 'Saving...' : 'Save Changes' }}
             </button>
           </div>
         </template>
@@ -224,7 +232,6 @@
       </div>
     </section>
 
-    <!-- Action feedback -->
     <div v-if="message && !selectedRequest" class="feedback-message" role="status">
       <span>✓</span>
       {{ message }}
@@ -236,7 +243,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { supabase } from '../../lib/supabase'
+
+const REGISTRAR_OFFICE_ID = '00409abc-cb88-480e-bdc0-5b94ac322ae7'
 
 const statuses = [
   'All',
@@ -261,54 +271,19 @@ const templates = {
   requirements: 'Please prepare the required documents for verification.'
 }
 
-function localDateOffset(offset = 0) {
-  const date = new Date()
-  date.setDate(date.getDate() + offset)
-
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
 const activeStatus = ref('All')
 const sortBy = ref('expected')
 const selectedRequest = ref(null)
+const requests = ref([])
 const message = ref('')
-
-const requests = ref([
-  {
-    id: 'REQ-2026-00126',
-    studentName: 'Maria Santos',
-    studentId: '2023-00126',
-    documentType: 'Good Moral Certificate',
-    status: 'Ready for Pickup',
-    expectedCompletion: '2026-10-05',
-    instructions: 'Bring your original school ID and request receipt.',
-    instructionTemplate: 'pickup',
-    instructionsSentAt: '2026-10-02T14:35:00',
-    createdAt: '2026-10-01T09:00:00',
-    updatedAt: '2026-10-02T14:35:00'
-  },
-  {
-    id: 'REQ-2026-00125',
-    studentName: 'Juan Dela Cruz',
-    studentId: '2023-00125',
-    documentType: 'Form 137',
-    status: 'Processing',
-    expectedCompletion: '2026-10-06',
-    instructions: '',
-    instructionTemplate: '',
-    instructionsSentAt: '',
-    createdAt: '2026-09-30T10:00:00',
-    updatedAt: '2026-10-02T09:30:00'
-  }
-])
+const loading = ref(false)
+const saving = ref(false)
+const loadError = ref('')
 
 const filteredRequests = computed(() => {
   const result = requests.value.filter(request =>
-    activeStatus.value === 'All' || request.status === activeStatus.value
+    activeStatus.value === 'All' ||
+    request.status === activeStatus.value
   )
 
   return [...result].sort((a, b) => {
@@ -320,9 +295,80 @@ const filteredRequests = computed(() => {
       return b.updatedAt.localeCompare(a.updatedAt)
     }
 
-    return a.expectedCompletion.localeCompare(b.expectedCompletion)
+    return (a.expectedCompletion || '9999-12-31')
+      .localeCompare(b.expectedCompletion || '9999-12-31')
   })
 })
+
+function formatRequestNumber(number, createdAt) {
+  const year = createdAt
+    ? new Date(createdAt).getFullYear()
+    : new Date().getFullYear()
+
+  return `REQ-${year}-${String(number).padStart(5, '0')}`
+}
+
+async function loadRequests() {
+  loading.value = true
+  loadError.value = ''
+
+  try {
+    const { data, error } = await supabase
+      .from('registrar_requests')
+      .select(`
+        id,
+        request_number,
+        student_id,
+        document_type,
+        status,
+        expected_completion,
+        instructions,
+        instruction_template,
+        instructions_sent_at,
+        handled_by,
+        created_at,
+        updated_at,
+        profiles:student_id (
+          full_name,
+          student_id
+        )
+      `)
+      .eq('office_id', REGISTRAR_OFFICE_ID)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    requests.value = (data || []).map(item => ({
+      id: formatRequestNumber(item.request_number, item.created_at),
+      databaseId: item.id,
+      studentUuid: item.student_id,
+      studentName: item.profiles?.full_name || 'Unknown Student',
+      studentId: item.profiles?.student_id || 'Not available',
+      documentType: item.document_type,
+      status: item.status,
+      expectedCompletion: item.expected_completion || '',
+      instructions: item.instructions || '',
+      instructionTemplate: item.instruction_template || '',
+      instructionsSentAt: item.instructions_sent_at || '',
+      handledBy: item.handled_by,
+      createdAt: item.created_at || '',
+      updatedAt: item.updated_at || ''
+    }))
+
+    if (selectedRequest.value) {
+      const refreshed = requests.value.find(
+        item => item.databaseId === selectedRequest.value.databaseId
+      )
+
+      selectedRequest.value = refreshed || null
+    }
+  } catch (error) {
+    console.error('Error loading registrar requests:', error)
+    loadError.value = error.message || 'Unable to load requests.'
+  } finally {
+    loading.value = false
+  }
+}
 
 function setStatus(status) {
   activeStatus.value = status
@@ -342,7 +388,7 @@ function countStatus(status) {
 }
 
 function selectRequest(request) {
-  selectedRequest.value = request
+  selectedRequest.value = { ...request }
   message.value = ''
 }
 
@@ -388,21 +434,58 @@ function applyTemplate() {
   }
 }
 
-function saveChanges() {
-  if (!selectedRequest.value) return
+async function saveChanges() {
+  if (!selectedRequest.value || saving.value) return
 
-  selectedRequest.value.updatedAt = new Date().toISOString()
+  saving.value = true
+  message.value = ''
 
-  if (selectedRequest.value.instructions.trim()) {
-    selectedRequest.value.instructionsSentAt = new Date().toISOString()
+  try {
+    const { data: userData, error: userError } =
+      await supabase.auth.getUser()
+
+    if (userError) throw userError
+    if (!userData.user) throw new Error('You must be logged in.')
+
+    const request = selectedRequest.value
+    const instructions = request.instructions.trim()
+
+    const { error } = await supabase
+      .from('registrar_requests')
+      .update({
+        status: request.status,
+        expected_completion: request.expectedCompletion || null,
+        instructions,
+        instruction_template: request.instructionTemplate,
+        instructions_sent_at: instructions
+          ? new Date().toISOString()
+          : null,
+        handled_by: userData.user.id
+      })
+      .eq('id', request.databaseId)
+      .eq('office_id', REGISTRAR_OFFICE_ID)
+
+    if (error) throw error
+
+    message.value = 'Request changes saved successfully.'
+
+    await loadRequests()
+
+    if (selectedRequest.value) {
+      message.value = 'Request changes saved successfully.'
+    }
+  } catch (error) {
+    console.error('Error saving request:', error)
+    message.value = error.message || 'Unable to save changes.'
+  } finally {
+    saving.value = false
   }
-
-  message.value = 'Changes updated for this session.'
 }
+
+onMounted(loadRequests)
 </script>
 
 <style scoped>
-/* Same base styling as Appointments.vue */
 .requests-page {
   padding: 3px 2px 24px;
   color: #4c2026;
@@ -430,7 +513,6 @@ function saveChanges() {
   line-height: 1.5;
 }
 
-/* Filters match Appointments */
 .status-filters {
   display: flex;
   align-items: center;
@@ -490,7 +572,6 @@ function saveChanges() {
   color: #650b18;
 }
 
-/* Sort row */
 .sort-row {
   display: flex;
   align-items: center;
@@ -543,7 +624,6 @@ function saveChanges() {
   border-color: #9b515a;
 }
 
-/* Two panels use the same card colors as Appointments */
 .requests-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -634,7 +714,6 @@ function saveChanges() {
   line-height: 1.5;
 }
 
-/* Status badges follow the Appointments palette */
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -646,21 +725,13 @@ function saveChanges() {
   text-align: center;
 }
 
-.status-badge.pending {
-  background: #f6e9b9;
-  color: #876818;
-}
-
+.status-badge.pending,
 .status-badge.processing {
   background: #f6e9b9;
   color: #876818;
 }
 
-.status-badge.ready-for-pickup {
-  background: #dcefe2;
-  color: #367653;
-}
-
+.status-badge.ready-for-pickup,
 .status-badge.claimed {
   background: #dcefe2;
   color: #367653;
@@ -671,7 +742,6 @@ function saveChanges() {
   color: #62595a;
 }
 
-/* Details panel */
 .request-details-panel {
   padding: 18px;
 }
@@ -802,7 +872,6 @@ function saveChanges() {
   background: #367653;
 }
 
-/* Details empty state */
 .details-empty-state {
   display: flex;
   min-height: 275px;
@@ -850,7 +919,6 @@ function saveChanges() {
   font-size: 13px;
 }
 
-/* Actions match Appointments buttons */
 .details-actions {
   display: flex;
   flex-wrap: wrap;
@@ -891,6 +959,11 @@ function saveChanges() {
 
 .action-button.secondary:hover {
   background: #f3e3e5;
+}
+
+.action-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .save-message {

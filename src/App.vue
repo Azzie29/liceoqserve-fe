@@ -1,108 +1,52 @@
 
 <template>
-  <div class="app-shell">
-    <RegistrarHeader />
+  <!-- Show login without the Registrar layout -->
+  <router-view v-if="$route.meta.public" />
 
-    <div class="app-body">
-      <RegistrarSidebar />
+  <!-- Show the existing Registrar layout after login -->
+  <div v-else class="registrar-app">
+    <RegistrarSidebar />
+
+    <div class="main-section">
+      <RegistrarHeader />
 
       <main class="page-content">
         <router-view />
       </main>
+
+      <footer class="app-footer">
+        LiceoQServe · Registrar Services
+      </footer>
     </div>
-
-    <!-- CUSTOM LOGOUT MODAL -->
-    <Teleport to="body">
-      <div
-        v-if="showLogoutModal"
-        class="logout-overlay"
-        @click.self="closeLogout"
-      >
-        <section
-          class="logout-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="logout-title"
-        >
-          <div class="warning-icon">
-            <span>!</span>
-          </div>
-
-          <h2 id="logout-title">Log out of QueueLess?</h2>
-
-          <p>You will return to the role selection screen.</p>
-
-          <div class="modal-actions">
-            <button
-              type="button"
-              class="go-back-button"
-              @click="closeLogout"
-            >
-              Go Back
-            </button>
-
-            <button
-              type="button"
-              class="confirm-button"
-              @click="confirmLogout"
-            >
-              Yes, log out
-            </button>
-          </div>
-        </section>
-      </div>
-    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
-
-import RegistrarHeader from './components/RegistrarHeader.vue'
 import RegistrarSidebar from './components/RegistrarSidebar.vue'
-
-const router = useRouter()
-const showLogoutModal = ref(false)
-
-function openLogout() {
-  showLogoutModal.value = true
-}
-
-function closeLogout() {
-  showLogoutModal.value = false
-}
-
-function handleEscape(event) {
-  if (event.key === 'Escape') {
-    closeLogout()
-  }
-}
-
-function confirmLogout() {
-  closeLogout()
-
-  // Remove these only if they are the actual auth keys used by your app.
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
-  sessionStorage.clear()
-
-  // Change '/' if your role selection page uses a different route.
-  router.push('/')
-}
-
-onMounted(() => {
-  window.addEventListener('open-logout-modal', openLogout)
-  window.addEventListener('keydown', handleEscape)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('open-logout-modal', openLogout)
-  window.removeEventListener('keydown', handleEscape)
-})
+import RegistrarHeader from './components/RegistrarHeader.vue'
 </script>
 
 <style>
+:root {
+  font-family: Arial, Helvetica, sans-serif;
+  color: #3b292c;
+  background: #f8eeee;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --maroon: #650b18;
+  --maroon-dark: #4c0711;
+  --maroon-soft: #8c2634;
+  --pink-bg: #f8eeee;
+  --pink-panel: #f2e2e3;
+  --pink-border: #e6cdd0;
+  --text-main: #3b292c;
+  --text-muted: #887477;
+  --white: #ffffff;
+  --green: #367653;
+  --yellow: #e6b83f;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -110,148 +54,205 @@ onBeforeUnmount(() => {
 html,
 body,
 #app {
-  min-height: 100%;
   margin: 0;
+  min-width: 320px;
+  min-height: 100%;
 }
 
-.app-shell {
+body {
   min-height: 100vh;
-  background: #eee0e0;
-  color: #351819;
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--pink-bg);
 }
 
-.app-body {
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.registrar-app {
   display: flex;
-  min-height: calc(100vh - 80px);
+  min-height: 100vh;
+  background: var(--pink-bg);
+}
+
+.main-section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .page-content {
   flex: 1;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 26px 30px;
+}
+
+.app-footer {
+  padding: 14px 30px;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-top: 1px solid var(--pink-border);
+  background: #fff8f8;
+}
+
+.page-heading {
+  margin-bottom: 22px;
+}
+
+.page-heading h2 {
+  margin: 0 0 7px;
+  color: var(--maroon);
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.page-heading p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.panel {
   min-width: 0;
   padding: 20px;
-  background: #eee0e0;
+  border: 1px solid var(--pink-border);
+  border-radius: 9px;
+  background: var(--white);
+  box-shadow: 0 2px 7px rgb(85 15 25 / 4%);
 }
 
-/* LOGOUT OVERLAY */
-.logout-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 999999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: rgba(0, 0, 0, 0.38);
+.panel-title {
+  margin: 0 0 16px;
+  color: var(--maroon);
+  font-size: 15px;
+  font-weight: 700;
 }
 
-.logout-modal {
-  width: 294px;
-  max-width: 100%;
-  padding: 11px 12px 18px;
-  border: 1px solid #e4d1d2;
-  border-radius: 10px;
-  background: #f8eeee;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
-  animation: modal-appear 0.15s ease-out;
+.primary-button {
+  padding: 10px 15px;
+  color: #fff;
+  border: 1px solid var(--maroon);
+  border-radius: 6px;
+  background: var(--maroon);
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.warning-icon {
-  display: flex;
-  width: 46px;
-  height: 36px;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 10px;
-  border-radius: 8px;
-  background: #a8797d;
+.primary-button:hover {
+  background: var(--maroon-dark);
 }
 
-.warning-icon span {
-  display: flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #51070d;
-  color: #f8eeee;
-  font-size: 17px;
-  font-weight: 800;
-}
-
-.logout-modal h2 {
-  margin: 0 0 5px 19px;
-  color: #35090d;
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 17px;
-  font-weight: 500;
-}
-
-.logout-modal > p {
-  margin: 0 0 16px 19px;
-  color: #351819;
-  font-size: 10px;
+.secondary-button {
+  padding: 9px 13px;
+  color: var(--maroon);
+  border: 1px solid var(--pink-border);
+  border-radius: 6px;
+  background: #fff8f8;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.5;
 }
 
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 9px;
-  padding-right: 1px;
+.data-table-wrap {
+  width: 100%;
+  overflow-x: auto;
 }
 
-.go-back-button,
-.confirm-button {
-  min-height: 28px;
-  padding: 6px 15px;
-  border-radius: 10px;
-  font-family: Arial, Helvetica, sans-serif;
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+
+.data-table th {
+  padding: 12px 10px;
+  color: #785c61;
+  background: #fbf3f3;
+  border-bottom: 1px solid var(--pink-border);
   font-size: 10px;
-  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.35px;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.go-back-button {
-  border: 1px solid #8a6265;
-  background: transparent;
-  color: #35090d;
+.data-table td {
+  padding: 13px 10px;
+  border-bottom: 1px solid #f0e4e5;
+  color: #554346;
+  vertical-align: middle;
 }
 
-.go-back-button:hover {
-  background: #eedfe0;
+.data-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
-.confirm-button {
-  border: 1px solid #51070d;
-  background: #51070d;
-  color: #fff7f6;
+.data-table tbody tr:hover {
+  background: #fff9f9;
 }
 
-.confirm-button:hover {
-  background: #6b111a;
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  border-radius: 20px;
+  background: #f5e8e9;
+  color: #7b2631;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-@keyframes modal-appear {
-  from {
-    opacity: 0;
-    transform: translateY(5px) scale(0.98);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+.status-pill.pending {
+  background: #fff1d0;
+  color: #8b6100;
 }
 
-@media (max-width: 600px) {
+.status-pill.processing {
+  background: #e9e4fa;
+  color: #5a4396;
+}
+
+.status-pill.ready {
+  background: #e0f3e7;
+  color: #286b43;
+}
+
+.status-pill.completed {
+  background: #e1f1e6;
+  color: #286b43;
+}
+
+.status-pill.cancelled {
+  background: #f4e1e3;
+  color: #8b2634;
+}
+
+.empty-state {
+  padding: 28px 12px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
   .page-content {
-    padding: 14px;
+    padding: 20px 16px;
   }
 
-  .logout-modal {
-    width: 294px;
+  .app-footer {
+    padding: 12px 16px;
   }
 }
 </style>

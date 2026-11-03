@@ -1,7 +1,6 @@
 
 <template>
   <main class="main-content">
-    <!-- PAGE HEADING -->
     <div class="page-heading">
       <h2>History</h2>
       <p>
@@ -9,7 +8,6 @@
       </p>
     </div>
 
-    <!-- HISTORY LIST -->
     <section class="history-list" aria-label="Activity history">
       <article
         v-for="record in historyRecords"
@@ -33,7 +31,6 @@
         </button>
       </article>
 
-      <!-- EMPTY STATE -->
       <div v-if="historyRecords.length === 0" class="empty-state">
         <div class="empty-icon">↻</div>
         <h3>No history records yet</h3>
@@ -43,7 +40,6 @@
       </div>
     </section>
 
-    <!-- HISTORY DETAILS MODAL -->
     <div
       v-if="selectedRecord"
       class="modal-overlay"
@@ -91,12 +87,24 @@
             </p>
           </div>
 
-          <div class="audit-note">
-            <span class="note-icon">i</span>
-            <p>
-              Additional audit information can be displayed here when
-              the complete history records are connected to the system.
-            </p>
+          <div class="detail-group">
+            <label>Student name</label>
+            <p>{{ selectedRecord.student }}</p>
+          </div>
+
+          <div class="detail-group">
+            <label>Transaction type</label>
+            <p>{{ selectedRecord.transactionType }}</p>
+          </div>
+
+          <div class="detail-group">
+            <label>Transaction ID</label>
+            <p>{{ selectedRecord.transactionId }}</p>
+          </div>
+
+          <div class="detail-group">
+            <label>Final status</label>
+            <p>{{ selectedRecord.finalStatus }}</p>
           </div>
         </div>
 
@@ -115,36 +123,86 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import { supabase } from '../../lib/supabase'
 
-// Sample history items based on the LiceoQServe PDF UI reference.
-// Connect these records to the actual backend when available.
-const historyRecords = ref([
-  {
-    id: 1,
-    title: 'Request Completed — Form 137',
-    date: 'Oct 2, 2026',
-    time: '4:17 PM',
-  },
-  {
-    id: 2,
-    title: 'Appointment Completed — Student Consultation',
-    date: 'Oct 2, 2026',
-    time: '3:42 PM',
-  },
-  {
-    id: 3,
-    title: 'Request Updated — Student Certification',
-    date: 'Oct 2, 2026',
-    time: '2:35 PM',
-  },
-])
-
+const historyRecords = ref([])
 const selectedRecord = ref(null)
+
+function formatDate(date) {
+  if (!date) return 'Date unavailable'
+
+  return new Date(date).toLocaleDateString('en-PH', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
+function formatTime(date) {
+  if (!date) return 'Time unavailable'
+
+  return new Date(date).toLocaleTimeString('en-PH', {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+async function loadHistory() {
+  try {
+    const { data, error } = await supabase
+      .from('service_history')
+      .select(`
+        id,
+        student_id,
+        service_id,
+        transaction_type,
+        transaction_id,
+        title,
+        final_status,
+        completed_at,
+        created_at,
+        student:profiles!service_history_student_id_fkey (
+          full_name,
+          student_id
+        ),
+        service:office_services!service_history_service_id_fkey (
+          name,
+          office_id
+        )
+      `)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    historyRecords.value = (data || []).map((item) => {
+      const activityDate = item.completed_at || item.created_at
+
+      return {
+        id: item.id,
+        title: item.title,
+        date: formatDate(activityDate),
+        time: formatTime(activityDate),
+        student: item.student?.full_name || 'Unknown student',
+        studentNumber: item.student?.student_id || 'Not available',
+        transactionType: item.transaction_type,
+        transactionId: item.transaction_id,
+        finalStatus: item.final_status,
+        serviceName: item.service?.name || 'Not available',
+      }
+    })
+  } catch (error) {
+    console.error('Error loading history:', error)
+  }
+}
 
 function viewDetails(record) {
   selectedRecord.value = record
 }
+
+onMounted(() => {
+  loadHistory()
+})
 </script>
 
 <style scoped>
@@ -171,29 +229,25 @@ function viewDetails(record) {
   font-size: 14px;
 }
 
-/* PAGE HEADING */
-
+/* Heading now matches Notifications and Appointments */
 .page-heading {
-  margin-bottom: 16px;
+  margin-bottom: 22px;
 }
 
 .page-heading h2 {
-  margin: 0 0 5px;
+  margin: 0 0 8px;
   color: var(--dark-maroon);
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 30px;
   font-weight: 500;
-  line-height: 1.25;
 }
 
 .page-heading p {
   margin: 0;
-  color: #4c3538;
-  font-size: 13px;
+  color: #887477;
+  font-size: 15px;
   line-height: 1.5;
 }
-
-/* HISTORY LIST */
 
 .history-list {
   display: flex;
@@ -276,8 +330,6 @@ function viewDetails(record) {
   outline-offset: 3px;
 }
 
-/* EMPTY STATE */
-
 .empty-state {
   display: flex;
   min-height: 220px;
@@ -318,8 +370,6 @@ function viewDetails(record) {
   font-size: 12px;
   line-height: 1.5;
 }
-
-/* DETAILS MODAL */
 
 .modal-overlay {
   position: fixed;
@@ -416,37 +466,6 @@ function viewDetails(record) {
   overflow-wrap: anywhere;
 }
 
-.audit-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 13px;
-  border: 1px solid #e3ccce;
-  border-radius: 8px;
-  background: #f4e5e6;
-}
-
-.note-icon {
-  display: flex;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #ead5d6;
-  color: var(--maroon);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.audit-note p {
-  margin: 0;
-  color: #593638;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -471,8 +490,6 @@ function viewDetails(record) {
   background: #710d16;
 }
 
-/* RESPONSIVE */
-
 @media (max-width: 600px) {
   .main-content {
     padding: 3px 2px 24px;
@@ -483,7 +500,7 @@ function viewDetails(record) {
   }
 
   .page-heading p {
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .history-list {

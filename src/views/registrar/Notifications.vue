@@ -19,13 +19,16 @@
         :class="{ selected: activeFilter === filter }"
         @click="setFilter(filter)"
       >
+        <span v-if="filter === 'All'" class="all-icon">▦</span>
+
         {{ filter }}
 
-        <span
-          v-if="filter === 'Unread' && unreadCount > 0"
-          class="filter-count"
-        >
+        <span v-if="filter === 'Unread'" class="filter-count">
           {{ unreadCount }}
+        </span>
+
+        <span v-if="filter === 'Read'" class="filter-count">
+          {{ readCount }}
         </span>
       </button>
     </div>
@@ -329,7 +332,8 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { supabase } from '../../lib/supabase'
 
 const filters = ['All', 'Unread', 'Read']
 
@@ -338,86 +342,15 @@ const selectedNotification = ref(null)
 const showTransactionModal = ref(false)
 const activeTransaction = ref(null)
 
-const notifications = ref([
-  {
-    id: 1,
-    title: 'New Registrar request submitted',
-    message: 'Maria Santos submitted a new document request.',
-    student: 'Maria Santos',
-    time: 'Oct. 2, 2026 · 2:35 PM',
-    category: 'Request',
-    type: 'request',
-    read: false,
-    transactionType: 'Good Moral Certificate',
-    reference: 'REQ-2026-00126',
-    transactionStatus: 'Ready for Pickup',
-    description:
-      'A new request was submitted by Maria Santos for a Good Moral Certificate. Review the request details and update the student if further action is needed.',
-  },
-  {
-    id: 2,
-    title: 'Appointment requires confirmation',
-    message: 'An appointment is waiting for registrar confirmation.',
-    student: 'Maria Santos',
-    time: 'Today · 10:30 AM',
-    category: 'Appointment',
-    type: 'appointment',
-    read: false,
-    transactionType: 'Registrar Appointment',
-    reference: 'APT-2026-00126',
-    transactionStatus: 'Pending',
-    description:
-      'This appointment requires confirmation. Open the related transaction to review the appointment details and confirm or reschedule it.',
-  },
-  {
-    id: 3,
-    title: 'Request status updated',
-    message: 'The request status was updated to Processing.',
-    student: 'Juan Dela Cruz',
-    time: 'Oct. 2, 2026 · 1:15 PM',
-    category: 'Status Update',
-    type: 'status',
-    read: true,
-    transactionType: 'Form 137',
-    reference: 'REQ-2026-00125',
-    transactionStatus: 'Processing',
-    description:
-      'The status of Juan Dela Cruz’s Form 137 request was updated. Review the related transaction for additional information.',
-  },
-  {
-    id: 4,
-    title: 'Appointment reminder',
-    message: 'An upcoming registrar appointment needs attention.',
-    student: 'Carlo Mendoza',
-    time: 'Oct. 3, 2026 · 9:00 AM',
-    category: 'Appointment',
-    type: 'appointment',
-    read: true,
-    transactionType: 'Transcript of Records',
-    reference: 'APT-2026-0041',
-    transactionStatus: 'Pending',
-    description:
-      'An upcoming appointment requires attention from the registrar. Open the related transaction to review its schedule and details.',
-  },
-  {
-    id: 5,
-    title: 'Request ready for pickup',
-    message: 'A student document is ready for claiming.',
-    student: 'Maria Santos',
-    time: 'Oct. 5, 2026 · 8:00 AM',
-    category: 'Status Update',
-    type: 'status',
-    read: true,
-    transactionType: 'Good Moral Certificate',
-    reference: 'REQ-2026-00126',
-    transactionStatus: 'Ready for Pickup',
-    description:
-      'The requested document is marked as ready for pickup. Ensure the student follows the registrar’s claiming instructions.',
-  },
-])
+const notifications = ref([])
+let currentUserId = null
 
 const unreadCount = computed(() =>
   notifications.value.filter((item) => !item.read).length
+)
+
+const readCount = computed(() =>
+  notifications.value.filter((item) => item.read).length
 )
 
 const filteredNotifications = computed(() => {
@@ -432,23 +365,131 @@ const filteredNotifications = computed(() => {
   return notifications.value
 })
 
+function formatDate(date) {
+  if (!date) return 'Date unavailable'
+
+  return new Date(date).toLocaleString('en-PH', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function getNotificationType(category) {
+  const value = String(category || '').toLowerCase()
+
+  if (value.includes('request')) return 'request'
+  if (value.includes('appointment')) return 'appointment'
+  if (value.includes('status')) return 'status'
+
+  return 'general'
+}
+
+function mapNotification(item) {
+  return {
+    id: item.id,
+    title: item.title,
+    message: item.message,
+    student: 'Not available',
+    time: formatDate(item.created_at),
+    category: item.category,
+    type: getNotificationType(item.category),
+    read: item.is_read,
+    relatedId: item.related_id,
+    transactionType: item.category,
+    reference: item.related_id || 'No linked transaction',
+    transactionStatus: 'Not available',
+    description: item.message,
+  }
+}
+
+async function loadNotifications() {
+  try {
+    const { data: { user }, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    if (!user) {
+      console.error('No authenticated user found.')
+      return
+    }
+
+    currentUserId = user.id
+
+    const { data, error } = await supabase
+      .from('notifications')
+      .select(`
+        id,
+        recipient_id,
+        title,
+        message,
+        category,
+        related_id,
+        is_read,
+        created_at
+      `)
+      .eq('recipient_id', currentUserId)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    notifications.value = (data || []).map(mapNotification)
+  } catch (error) {
+    console.error('Error loading notifications:', error)
+  }
+}
+
 function setFilter(filter) {
   activeFilter.value = filter
 }
 
-function openNotification(notification) {
-  notification.read = true
+async function openNotification(notification) {
   selectedNotification.value = notification
+
+  if (!notification.read) {
+    await markAsRead(notification)
+  }
 }
 
-function markAsRead(notification) {
-  notification.read = true
-}
+async function markAsRead(notification) {
+  if (!currentUserId || notification.read) return
 
-function markAllAsRead() {
-  notifications.value.forEach((notification) => {
+  try {
+    const { error } = await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('id', notification.id)
+      .eq('recipient_id', currentUserId)
+
+    if (error) throw error
+
     notification.read = true
-  })
+  } catch (error) {
+    console.error('Error marking notification as read:', error)
+  }
+}
+
+async function markAllAsRead() {
+  if (!currentUserId) return
+
+  try {
+    const { error } = await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('recipient_id', currentUserId)
+      .eq('is_read', false)
+
+    if (error) throw error
+
+    notifications.value.forEach((notification) => {
+      notification.read = true
+    })
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error)
+  }
 }
 
 function openRelatedTransaction(notification) {
@@ -456,6 +497,10 @@ function openRelatedTransaction(notification) {
   selectedNotification.value = null
   showTransactionModal.value = true
 }
+
+onMounted(() => {
+  loadNotifications()
+})
 </script>
 
 <style scoped>
@@ -481,72 +526,85 @@ function openRelatedTransaction(notification) {
 /* PAGE HEADING */
 
 .page-heading {
-  margin-bottom: 22px;
+  margin: 0 0 22px;
 }
 
 .page-heading h2 {
-  margin: 0 0 8px;
+  margin: 0;
   color: #50070e;
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 30px;
   font-weight: 500;
+  line-height: 1.2;
 }
 
 .page-heading p {
-  margin: 0;
+  margin: 7px 0 0;
   color: #887477;
   font-size: 15px;
   line-height: 1.5;
 }
 
-/* FILTERS */
+/* FILTERS - MATCHING REQUESTS */
 
 .filter-row {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 9px;
+  margin-bottom: 19px;
 }
 
 .filter-button {
   display: inline-flex;
-  min-height: 38px;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 0 16px;
-  border: 1px solid #dfbfc2;
-  border-radius: 24px;
-  background: #f7eeee;
-  color: #4c2026;
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 22px;
+  background: #fff;
+  color: #75565b;
+  font-family: inherit;
   font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s, color 0.15s;
 }
 
 .filter-button:hover {
-  background: #ead6d7;
+  border-color: #e6cdd0;
+  background: #f8eeee;
 }
 
 .filter-button.selected {
-  border-color: var(--maroon);
-  background: var(--maroon);
+  background: #650b18;
   color: #fff;
-  font-weight: 700;
+}
+
+.all-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .filter-count {
   display: inline-flex;
-  min-width: 18px;
-  height: 18px;
   align-items: center;
   justify-content: center;
+  min-width: 19px;
+  height: 19px;
   padding: 0 4px;
-  border-radius: 50%;
-  background: white;
-  color: var(--maroon);
-  font-size: 10px;
+  border-radius: 12px;
+  background: #f2e2e3;
+  color: #650b18;
+  font-size: 11px;
+}
+
+.filter-button.selected .filter-count {
+  background: #fff;
+  color: #650b18;
 }
 
 /* NOTIFICATIONS PANEL */
@@ -1006,12 +1064,11 @@ function openRelatedTransaction(notification) {
   }
 
   .filter-row {
-    gap: 7px;
+    gap: 6px;
   }
 
   .filter-button {
-    min-height: 34px;
-    padding: 0 11px;
+    padding: 7px 10px;
     font-size: 12px;
   }
 
