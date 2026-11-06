@@ -1,9 +1,8 @@
 
 <script setup>
-import { useRouter } from 'vue-router'
 import StatCard from '../components/StatCard.vue'
 
-const router = useRouter()
+const emit = defineEmits(['navigate'])
 
 const stats = [
   { title: "TODAY'S APPOINTMENTS", count: 1, subtitle: 'View Details' },
@@ -12,21 +11,15 @@ const stats = [
 ]
 
 function goToAppointments() {
-  router.push('/appointments')
+  emit('navigate', 'Appointments')
 }
 
 function goToPending() {
-  router.push({
-    path: '/requests',
-    query: { status: 'Pending' }
-  })
+  emit('navigate', 'Request')
 }
 
 function goToReadyForPickup() {
-  router.push({
-    path: '/requests',
-    query: { status: 'Ready for Pick Up' }
-  })
+  emit('navigate', 'Request')
 }
 
 const appointments = [
@@ -67,20 +60,22 @@ const requests = [
     </div>
 
     <div class="stats-grid">
-  <div
-    v-for="(stat, index) in stats"
-    :key="stat.title"
-  >
-    <StatCard
-      v-bind="stat"
-      @click="[
-        goToAppointments,
-        goToPending,
-        goToReadyForPickup
-      ][index]()"
-    />
-  </div>
-</div>
+      <div
+        v-for="(stat, index) in stats"
+        :key="stat.title"
+      >
+        <StatCard
+          v-bind="stat"
+          @click="
+            index === 0
+              ? goToAppointments()
+              : index === 1
+                ? goToPending()
+                : goToReadyForPickup()
+          "
+        />
+      </div>
+    </div>
 
     <div class="dashboard-grid">
       <section class="panel dashboard-panel">
