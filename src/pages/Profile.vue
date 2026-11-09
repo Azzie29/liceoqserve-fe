@@ -1,6 +1,7 @@
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
 const showPasswordForm = ref(false)
 
@@ -8,8 +9,111 @@ const currentPassword = ref('')
 const newPassword = ref('')
 const confirmNewPassword = ref('')
 const passwordMessage = ref('')
+const passwordLoading = ref(false)
 
-function updatePassword() {
+const loading = ref(false)
+const errorMessage = ref('')
+
+const profile = ref({
+  full_name: '',
+  university_email: '',
+  role: '',
+  is_active: false,
+  office_name: ''
+})
+
+const initials = ref('')
+
+// GET INITIALS
+function getInitials(name) {
+  if (!name) return 'NA'
+
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map(word => word.charAt(0).toUpperCase())
+    .join('')
+}
+
+// FORMAT ROLE
+function formatRole(role) {
+  if (!role) return 'Not assigned'
+
+  return role
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase())
+}
+
+// FETCH PROFILE FROM SUPABASE
+async function fetchProfile() {
+  loading.value = true
+  errorMessage.value = ''
+
+  try {
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    const user = authData.user
+
+    if (!user) {
+      throw new Error('No logged-in user found.')
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        full_name,
+        university_email,
+        role,
+        office_id,
+        is_active
+      `)
+      .eq('id', user.id)
+      .single()
+
+    if (error) throw error
+
+    let officeName = 'Not assigned'
+
+    if (data.office_id) {
+      const { data: office, error: officeError } = await supabase
+        .from('offices')
+        .select('name')
+        .eq('id', data.office_id)
+        .maybeSingle()
+
+      if (officeError) {
+        console.error('Unable to fetch office:', officeError)
+      } else if (office) {
+        officeName = office.name
+      }
+    }
+
+    profile.value = {
+      full_name: data.full_name || 'No name available',
+      university_email:
+        data.university_email || user.email || 'No email available',
+      role: data.role || 'Not assigned',
+      is_active: data.is_active,
+      office_name: officeName
+    }
+
+    initials.value = getInitials(profile.value.full_name)
+
+  } catch (error) {
+    console.error('Unable to fetch profile:', error)
+    errorMessage.value = error.message || 'Unable to load profile.'
+  } finally {
+    loading.value = false
+  }
+}
+
+// CHANGE PASSWORD THROUGH SUPABASE AUTH
+async function updatePassword() {
   passwordMessage.value = ''
 
   if (
@@ -21,19 +125,73 @@ function updatePassword() {
     return
   }
 
+  if (newPassword.value.length < 6) {
+    passwordMessage.value = 'New password must be at least 6 characters.'
+    return
+  }
+
   if (newPassword.value !== confirmNewPassword.value) {
     passwordMessage.value = 'New passwords do not match.'
     return
   }
 
-  passwordMessage.value =
-    'Password form validated. Connect this to your authentication backend to save the new password.'
+  if (currentPassword.value === newPassword.value) {
+    passwordMessage.value =
+      'New password must be different from current password.'
+    return
+  }
 
-  currentPassword.value = ''
-  newPassword.value = ''
-  confirmNewPassword.value = ''
+  passwordLoading.value = true
+
+  try {
+    // GET CURRENT LOGGED-IN USER
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    const user = authData.user
+
+    if (!user?.email) {
+      throw new Error('Unable to identify your account.')
+    }
+
+    // VERIFY CURRENT PASSWORD
+    const { error: verifyError } =
+      await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPassword.value
+      })
+
+    if (verifyError) {
+      passwordMessage.value = 'Your current password is incorrect.'
+      return
+    }
+
+    // UPDATE PASSWORD IN SUPABASE AUTHENTICATION
+    const { error: updateError } =
+      await supabase.auth.updateUser({
+        password: newPassword.value
+      })
+
+    if (updateError) throw updateError
+
+    passwordMessage.value = 'Password successfully updated!'
+
+    currentPassword.value = ''
+    newPassword.value = ''
+    confirmNewPassword.value = ''
+
+  } catch (error) {
+    console.error('Password update error:', error)
+    passwordMessage.value =
+      error.message || 'Unable to update password.'
+  } finally {
+    passwordLoading.value = false
+  }
 }
 
+// CANCEL PASSWORD CHANGE
 function cancelPasswordChange() {
   showPasswordForm.value = false
   passwordMessage.value = ''
@@ -41,11 +199,17 @@ function cancelPasswordChange() {
   newPassword.value = ''
   confirmNewPassword.value = ''
 }
+
+onMounted(() => {
+  fetchProfile()
+})
 </script>
 
 <template>
   <section class="profile-page">
     <div class="profile-content">
+
+      <!-- PAGE HEADING -->
       <header class="profile-heading">
         <h1>STAFF PROFILE</h1>
         <p>
@@ -53,37 +217,70 @@ function cancelPasswordChange() {
         </p>
       </header>
 
-      <article class="profile-card">
-        <div class="profile-card-header">
-          <div class="profile-avatar">JA</div>
+      <!-- LOADING -->
+      <p v-if="loading" class="loading-message">
+        Loading staff profile...
+      </p>
 
-          <h2>Mr. Jerome Aquino</h2>
-          <p>Office of Student Affairs · Employee ID: LDCU-1048</p>
+      <!-- ERROR -->
+      <p v-if="errorMessage" class="error-message">
+        {{ errorMessage }}
+      </p>
+
+      <!-- PROFILE CARD -->
+      <article
+        v-if="!loading && !errorMessage"
+        class="profile-card"
+      >
+        <div class="profile-card-header">
+          <div class="profile-avatar">
+            {{ initials }}
+          </div>
+
+          <h2>{{ profile.full_name }}</h2>
+
+          <p>
+            {{ profile.office_name }} ·
+            {{ formatRole(profile.role) }}
+          </p>
         </div>
 
         <div class="profile-card-body">
+
+          <!-- PROFILE DETAILS -->
           <div class="profile-details">
+
             <div class="detail-item">
               <span>University email</span>
-              <strong>guidance@liceo.edu.ph</strong>
+              <strong>{{ profile.university_email }}</strong>
             </div>
 
             <div class="detail-item">
               <span>Assigned Office</span>
-              <strong>Guidance Office</strong>
+              <strong>{{ profile.office_name }}</strong>
             </div>
 
             <div class="detail-item">
               <span>Role</span>
-              <strong>Authorized Staff</strong>
+              <strong>{{ formatRole(profile.role) }}</strong>
             </div>
 
             <div class="detail-item">
               <span>Account Status</span>
-              <strong>Active</strong>
+              <strong
+                :class="
+                  profile.is_active
+                    ? 'active-status'
+                    : 'inactive-status'
+                "
+              >
+                {{ profile.is_active ? 'Active' : 'Inactive' }}
+              </strong>
             </div>
+
           </div>
 
+          <!-- CHANGE PASSWORD BUTTON -->
           <button
             v-if="!showPasswordForm"
             class="password-toggle"
@@ -93,6 +290,7 @@ function cancelPasswordChange() {
             Change Password
           </button>
 
+          <!-- CHANGE PASSWORD FORM -->
           <form
             v-else
             class="password-form"
@@ -100,40 +298,72 @@ function cancelPasswordChange() {
           >
             <h3>Change Password</h3>
 
-            <label for="current-password">Current password</label>
+            <label for="current-password">
+              Current password
+            </label>
+
             <input
               id="current-password"
               v-model="currentPassword"
               type="password"
               autocomplete="current-password"
+              placeholder="Enter current password"
               required
             />
 
-            <label for="new-password">New password</label>
+            <label for="new-password">
+              New password
+            </label>
+
             <input
               id="new-password"
               v-model="newPassword"
               type="password"
               autocomplete="new-password"
+              placeholder="Enter new password"
+              minlength="6"
               required
             />
 
-            <label for="confirm-password">Confirm new password</label>
+            <label for="confirm-password">
+              Confirm new password
+            </label>
+
             <input
               id="confirm-password"
               v-model="confirmNewPassword"
               type="password"
               autocomplete="new-password"
+              placeholder="Confirm new password"
+              minlength="6"
               required
             />
 
-            <p v-if="passwordMessage" class="password-message">
+            <!-- PASSWORD MESSAGE -->
+            <p
+              v-if="passwordMessage"
+              class="password-message"
+              :class="{
+                'success-message':
+                  passwordMessage === 'Password successfully updated!'
+              }"
+            >
               {{ passwordMessage }}
             </p>
 
+            <!-- ACTION BUTTONS -->
             <div class="password-actions">
-              <button class="password-toggle" type="submit">
-                Update password
+
+              <button
+                class="password-toggle"
+                type="submit"
+                :disabled="passwordLoading"
+              >
+                {{
+                  passwordLoading
+                    ? 'Updating...'
+                    : 'Update password'
+                }}
               </button>
 
               <button
@@ -143,10 +373,13 @@ function cancelPasswordChange() {
               >
                 Cancel
               </button>
+
             </div>
           </form>
+
         </div>
       </article>
+
     </div>
   </section>
 </template>
@@ -167,7 +400,7 @@ function cancelPasswordChange() {
   margin: 0 auto;
 }
 
-/* Heading and card share the same left and right edges */
+/* HEADING */
 .profile-heading {
   width: 100%;
   margin: 0 0 14px;
@@ -195,6 +428,7 @@ function cancelPasswordChange() {
   font-weight: 500;
 }
 
+/* PROFILE CARD */
 .profile-card {
   width: 100%;
   margin: 0;
@@ -242,6 +476,7 @@ function cancelPasswordChange() {
   line-height: 1.5;
 }
 
+/* PROFILE DETAILS */
 .profile-card-body {
   padding: 18px 20px;
 }
@@ -273,6 +508,15 @@ function cancelPasswordChange() {
   overflow-wrap: anywhere;
 }
 
+.active-status {
+  color: #28743a !important;
+}
+
+.inactive-status {
+  color: #a21c28 !important;
+}
+
+/* PASSWORD BUTTONS */
 .password-toggle,
 .cancel-button {
   min-height: 36px;
@@ -293,6 +537,12 @@ function cancelPasswordChange() {
   background: #efdddd;
 }
 
+.password-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* PASSWORD FORM */
 .password-form {
   display: flex;
   width: 100%;
@@ -342,12 +592,33 @@ function cancelPasswordChange() {
 
 .password-message {
   margin: 5px 0 0;
-  color: #650f18;
+  color: #a21c28;
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
+.success-message {
+  color: #28743a;
+}
+
+/* LOADING AND ERROR */
+.loading-message,
+.error-message {
+  margin: 10px 0;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+}
+
+.loading-message {
+  color: #987d7e;
+}
+
+.error-message {
+  color: #a21c28;
+}
+
+/* RESPONSIVE */
 @media (max-width: 600px) {
   .profile-page {
     padding: 10px;

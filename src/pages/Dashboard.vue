@@ -1,50 +1,120 @@
 
 <script setup>
+import { ref, onMounted } from 'vue'
 import StatCard from '../components/StatCard.vue'
+import { supabase } from '../lib/Supabase.js'
 
 const emit = defineEmits(['navigate'])
 
+const NICO_STUDENT_ID = '2921235d-a3c7-4864-8dbc-b517081eec7d'
+
 const stats = [
-  { title: "TODAY'S APPOINTMENTS", count: 1, subtitle: 'View Details' },
+  { title: "TODAY'S APPOINTMENTS", count: 0, subtitle: 'View Details' },
   { title: 'PENDING REQUEST', count: 1, subtitle: 'View Details' },
-  { title: 'READY FOR PICK UP', count: 1, subtitle: 'View Details' }
+  { title: 'READY FOR PICK UP', count: 0, subtitle: 'View Details' }
 ]
+
+const requests = ref([])
+const studentName = ref('Nico Da')
+const loading = ref(false)
+const errorMessage = ref('')
 
 function goToAppointments() {
   emit('navigate', 'Appointments')
 }
 
 function goToPending() {
-  emit('navigate', 'Request')
+  emit('navigate', 'Request', 'Pending')
 }
 
 function goToReadyForPickup() {
-  emit('navigate', 'Request')
+  emit('navigate', 'Request', 'Ready for Pick Up')
 }
 
-const appointments = [
-  {
-    time: '1:00 PM',
-    student: 'Maria Santos',
-    purpose: 'Student ID Application',
-    status: 'Pending'
-  }
-]
+async function fetchDashboardRequests() {
+  loading.value = true
+  errorMessage.value = ''
 
-const requests = [
-  {
-    student: 'Juan Dela Cruz',
-    purpose: 'Student Certification',
-    office: 'OSA - 015',
-    status: 'Ready for Pick Up'
-  },
-  {
-    student: 'Maria Santos',
-    purpose: 'Organization Document',
-    office: 'OSA - 016',
-    status: 'Processing'
+  try {
+    // Get Nico Da profile
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .eq('id', NICO_STUDENT_ID)
+      .single()
+
+    if (profileError) throw profileError
+
+    studentName.value = profile.full_name
+
+    // Get Nico Da requests from Supabase
+    const { data, error } = await supabase
+      .from('service_requests')
+      .select(`
+        id,
+        title,
+        request_type,
+        details,
+        status,
+        submitted_at,
+        expected_completion
+      `)
+      .eq('student_id', NICO_STUDENT_ID)
+      .order('submitted_at', { ascending: false })
+
+    if (error) throw error
+
+    requests.value = data || []
+  } catch (error) {
+    console.error('Dashboard request fetch error:', error)
+    errorMessage.value = error.message || 'Unable to load requests.'
+  } finally {
+    loading.value = false
   }
-]
+}
+
+// Display time only, without the date
+function formatRequestDate(date) {
+  if (!date) return 'Time not available'
+
+  return new Date(date).toLocaleTimeString('en-PH', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+function formatStatus(status) {
+  if (!status) return 'Pending'
+
+  return status
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase())
+}
+
+function statusClass(status) {
+  const normalized = (status || '').toLowerCase()
+
+  if (normalized === 'processing') return 'processing'
+
+  if (
+    normalized === 'ready_for_pickup' ||
+    normalized === 'claimed' ||
+    normalized === 'completed'
+  ) {
+    return 'confirmed'
+  }
+
+  if (normalized === 'rejected' || normalized === 'cancelled') {
+    return 'rejected'
+  }
+
+  return 'pending'
+}
+
+onMounted(() => {
+  fetchDashboardRequests()
+})
 </script>
 
 <template>
@@ -81,48 +151,51 @@ const requests = [
       <section class="panel dashboard-panel">
         <h3>TODAY'S APPOINTMENTS</h3>
 
+        <div v-if="loading" class="record-row">
+          <div class="record-info">
+            <span>Loading Nico Da requests...</span>
+          </div>
+        </div>
+
+        <div v-else-if="errorMessage" class="record-row">
+          <div class="record-info">
+            <strong>Unable to load requests</strong>
+            <span>{{ errorMessage }}</span>
+          </div>
+        </div>
+
         <div
-          v-for="item in appointments"
-          :key="item.student"
+          v-else-if="requests.length === 0"
+          class="record-row"
+        >
+          <div class="record-info">
+            <strong>{{ studentName }}</strong>
+            <span>No requests found.</span>
+          </div>
+        </div>
+
+        <div
+          v-else
+          v-for="item in requests"
+          :key="item.id"
           class="record-row"
         >
           <div class="record-time">
-            {{ item.time }}
+            {{ formatRequestDate(item.submitted_at) }}
           </div>
 
           <div class="record-info">
-            <strong>{{ item.student }}</strong>
-            <span>{{ item.purpose }}</span>
-          </div>
-
-          <span class="status-badge pending">
-            {{ item.status }}
-          </span>
-        </div>
-      </section>
-
-      <section class="panel dashboard-panel">
-        <h3>RECENT WORK</h3>
-
-        <div
-          v-for="item in requests"
-          :key="item.student + item.purpose"
-          class="request-row"
-        >
-          <div class="record-info">
-            <strong>{{ item.student }} - {{ item.purpose }}</strong>
-            <span>{{ item.office }}</span>
+            <strong>{{ studentName }}</strong>
+            <span>{{ item.title || item.request_type }}</span>
           </div>
 
           <span
             :class="[
               'status-badge',
-              item.status === 'Processing'
-                ? 'processing'
-                : 'confirmed'
+              statusClass(item.status)
             ]"
           >
-            {{ item.status }}
+            {{ formatStatus(item.status) }}
           </span>
         </div>
       </section>

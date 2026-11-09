@@ -1,10 +1,13 @@
+
 <template>
   <section class="students-page">
+
     <div class="students-heading">
       <h1>STUDENTS</h1>
       <p>Search Office of Student Affairs records by name or student ID.</p>
     </div>
 
+    <!-- SEARCH AND REFRESH -->
     <div class="students-toolbar">
       <input
         v-model="searchQuery"
@@ -13,8 +16,22 @@
         placeholder="Search name or Student ID"
         aria-label="Search students"
       />
+
+      <button
+        type="button"
+        class="refresh-button"
+        @click="fetchStudents"
+        :disabled="loading"
+      >
+        {{ loading ? 'Loading...' : 'Refresh' }}
+      </button>
     </div>
 
+    <div v-if="errorMessage" class="error-message">
+      {{ errorMessage }}
+    </div>
+
+    <!-- STUDENTS TABLE -->
     <div class="students-table-wrapper">
       <table class="students-table">
         <thead>
@@ -29,6 +46,12 @@
         </thead>
 
         <tbody>
+          <tr v-if="loading && students.length === 0">
+            <td colspan="6" class="empty-state">
+              Loading students...
+            </td>
+          </tr>
+
           <tr
             v-for="student in filteredStudents"
             :key="student.id"
@@ -37,10 +60,12 @@
             <td>{{ student.studentId }}</td>
             <td>{{ student.course }}</td>
             <td>{{ student.yearLevel }}</td>
+
             <td>
               <div>{{ student.email }}</div>
               <div>{{ student.contact }}</div>
             </td>
+
             <td>
               <button
                 type="button"
@@ -52,9 +77,15 @@
             </td>
           </tr>
 
-          <tr v-if="filteredStudents.length === 0">
+          <tr
+            v-if="!loading && filteredStudents.length === 0"
+          >
             <td colspan="6" class="empty-state">
-              No students found.
+              {{
+                students.length === 0
+                  ? 'No student records found.'
+                  : 'No students match your search.'
+              }}
             </td>
           </tr>
         </tbody>
@@ -62,15 +93,17 @@
     </div>
 
     <div class="students-footer">
-      Showing {{ filteredStudents.length }} student(s)
+      <span>
+        Showing {{ filteredStudents.length }} of
+        {{ students.length }} student(s)
+      </span>
     </div>
 
-    <!-- Student Details Modal -->
+    <!-- STUDENT DETAILS MODAL -->
     <div
       v-if="selectedStudent"
       class="modal-overlay"
       @click.self="closeDetails"
-      @keydown.esc="closeDetails"
     >
       <section
         class="details-modal"
@@ -78,6 +111,7 @@
         aria-modal="true"
         aria-labelledby="student-details-title"
       >
+
         <div class="modal-top">
           <span class="eyebrow">STUDENT DETAILS</span>
 
@@ -99,6 +133,7 @@
         <h3>Personal Information</h3>
 
         <div class="personal-grid">
+
           <div class="info-item">
             <span>Full name</span>
             <strong>{{ selectedStudent.name }}</strong>
@@ -128,122 +163,195 @@
             <span>Contact number</span>
             <strong>{{ selectedStudent.contact }}</strong>
           </div>
+
+          <div class="info-item">
+            <span>Account Status</span>
+            <strong
+              :class="
+                selectedStudent.isActive
+                  ? 'active-status'
+                  : 'inactive-status'
+              "
+            >
+              {{ selectedStudent.isActive ? 'Active' : 'Inactive' }}
+            </strong>
+          </div>
+
         </div>
 
         <div class="section-divider"></div>
 
         <h3>Current Active Transactions</h3>
 
-        <div class="transaction-row">
-          <span>OSA — Student Certification</span>
-          <strong class="transaction-status processing">
-            Processing
-          </strong>
-        </div>
-
-        <div class="transaction-row">
-          <span>Library — Clearance</span>
-          <strong class="transaction-status pending">
-            Pending
-          </strong>
+        <div class="not-connected-message">
+          Transaction records are not connected to this page yet.
         </div>
 
         <h3 class="history-heading">Transaction History</h3>
 
-        <div class="history-card">
-          <strong>
-            Request Completed — Certificate of Registration
-          </strong>
-          <span>Sep. 18, 2026 · 2:40 PM</span>
+        <div class="not-connected-message">
+          Transaction history will appear here once it is connected to the database.
         </div>
 
-        <div class="history-card">
-          <strong>
-            Appointment Completed — Student Consultation
-          </strong>
-          <span>Aug. 29, 2026 · 10:15 AM</span>
-        </div>
       </section>
     </div>
+
   </section>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import {
+  ref,
+  computed,
+  onMounted,
+  onBeforeUnmount
+} from 'vue'
+
+import { supabase } from '../lib/Supabase.js'
 
 const searchQuery = ref('')
 const selectedStudent = ref(null)
+const students = ref([])
+const loading = ref(false)
+const errorMessage = ref('')
 
-const students = ref([
-  {
-    id: 1,
-    studentId: '2026-001',
-    name: 'Juan Dela Cruz',
-    course: 'BS Information Technology',
-    yearLevel: '3rd Year',
-    email: 'juan.delacruz@liceo.edu.ph',
-    contact: '+63 917 321 4501'
-  },
-  {
-    id: 2,
-    studentId: '2026-002',
-    name: 'Maria Santos',
-    course: 'BS Business Administration',
-    yearLevel: '2nd Year',
-    email: 'maria.santos@liceo.edu.ph',
-    contact: '+63 918 557 1082'
-  },
-  {
-    id: 3,
-    studentId: '2024-11203',
-    name: 'Ryan Garcia',
-    course: 'BS Computer Science',
-    yearLevel: '4th Year',
-    email: 'ryan.garcia@liceo.edu.ph',
-    contact: '+63 920 884 3390'
+let studentsChannel = null
+
+// CONVERT DATABASE VALUES
+function mapStudent(profile) {
+  return {
+    id: profile.id,
+    studentId: profile.student_id || 'Not provided',
+    name: profile.full_name || 'Not provided',
+    course: profile.program || 'Not provided',
+    yearLevel: profile.year_level || 'Not provided',
+    email: profile.university_email || 'Not provided',
+    contact: 'Not available',
+    isActive: profile.is_active === true
   }
-])
+}
 
+// FETCH STUDENTS FROM SUPABASE
+async function fetchStudents() {
+  loading.value = true
+  errorMessage.value = ''
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        student_id,
+        full_name,
+        university_email,
+        program,
+        year_level,
+        role,
+        is_active,
+        created_at
+      `)
+      .eq('role', 'student')
+      .order('full_name', { ascending: true })
+
+    if (error) {
+      throw error
+    }
+
+    students.value = (data || []).map(mapStudent)
+
+    // UPDATE SELECTED STUDENT DETAILS
+    if (selectedStudent.value) {
+      const updatedStudent = students.value.find(
+        student => student.id === selectedStudent.value.id
+      )
+
+      selectedStudent.value = updatedStudent || null
+    }
+
+  } catch (error) {
+    console.error('FETCH STUDENTS ERROR:', error)
+
+    errorMessage.value =
+      error.message || 'Unable to load student records from Supabase.'
+
+  } finally {
+    loading.value = false
+  }
+}
+
+// SEARCH STUDENTS
 const filteredStudents = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
 
-  if (!query) return students.value
-
-  return students.value.filter(student =>
-    [
+  return students.value.filter(student => {
+    return [
       student.name,
       student.studentId,
       student.course,
       student.yearLevel,
-      student.email,
-      student.contact
-    ].some(value => value.toLowerCase().includes(query))
-  )
+      student.email
+    ].some(value =>
+      String(value).toLowerCase().includes(query)
+    )
+  })
 })
 
+// OPEN STUDENT DETAILS
 function openDetails(student) {
   selectedStudent.value = student
   document.body.style.overflow = 'hidden'
 }
 
+// CLOSE STUDENT DETAILS
 function closeDetails() {
   selectedStudent.value = null
   document.body.style.overflow = ''
 }
 
+// ESCAPE KEY
 function handleEscape(event) {
   if (event.key === 'Escape') {
     closeDetails()
   }
 }
 
+// SUPABASE REALTIME
+function subscribeToStudentChanges() {
+  studentsChannel = supabase
+    .channel('osa-students-profiles')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'profiles'
+      },
+      () => {
+        fetchStudents()
+      }
+    )
+    .subscribe(status => {
+      console.log('STUDENTS REALTIME STATUS:', status)
+    })
+}
+
+// LIFECYCLE
 onMounted(() => {
+  fetchStudents()
+  subscribeToStudentChanges()
+
   window.addEventListener('keydown', handleEscape)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleEscape)
+
   document.body.style.overflow = ''
+
+  if (studentsChannel) {
+    supabase.removeChannel(studentsChannel)
+    studentsChannel = null
+  }
 })
 </script>
 
@@ -257,6 +365,7 @@ onBeforeUnmount(() => {
   font-family: Georgia, "Times New Roman", serif;
 }
 
+/* HEADING */
 .students-heading {
   margin-bottom: 28px;
 }
@@ -276,12 +385,17 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
+/* TOOLBAR */
 .students-toolbar {
+  display: flex;
+  gap: 10px;
   margin-bottom: 20px;
 }
 
 .search-input {
+  flex: 1;
   width: 100%;
+  min-width: 0;
   min-height: 40px;
   padding: 10px 14px;
   border: 1px solid #d8b6b8;
@@ -291,6 +405,7 @@ onBeforeUnmount(() => {
   color: #350609;
   font-family: Arial, sans-serif;
   font-size: 12px;
+  box-sizing: border-box;
 }
 
 .search-input:focus {
@@ -298,6 +413,41 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgb(89 8 14 / 10%);
 }
 
+.refresh-button {
+  padding: 9px 15px;
+  border: 1px solid #59080e;
+  border-radius: 7px;
+  background: #59080e;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #760e16;
+}
+
+.refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ERROR */
+.error-message {
+  margin-bottom: 15px;
+  padding: 12px 14px;
+  border: 1px solid #e5bfc1;
+  border-radius: 7px;
+  background: #f9e5e6;
+  color: #8a2828;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
+}
+
+/* TABLE */
 .students-table-wrapper {
   width: 100%;
   overflow-x: auto;
@@ -340,6 +490,7 @@ onBeforeUnmount(() => {
   background: #f3e4e5;
 }
 
+/* VIEW DETAILS */
 .view-details {
   padding: 4px 0;
   border: none;
@@ -361,6 +512,7 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
+/* FOOTER */
 .students-footer {
   display: flex;
   justify-content: flex-end;
@@ -370,7 +522,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-/* Modal backdrop */
+/* MODAL BACKDROP */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -384,7 +536,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
-/* Student details panel */
+/* STUDENT DETAILS PANEL */
 .details-modal {
   position: relative;
   width: 100%;
@@ -451,6 +603,7 @@ onBeforeUnmount(() => {
   background: #e8d6d7;
 }
 
+/* PERSONAL INFORMATION */
 .personal-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -477,73 +630,32 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.transaction-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  min-height: 38px;
-  margin-bottom: 8px;
-  padding: 9px 11px;
+.active-status {
+  color: #287a3a !important;
+}
+
+.inactive-status {
+  color: #a02c2c !important;
+}
+
+/* TRANSACTION PLACEHOLDER */
+.not-connected-message {
+  padding: 12px;
   border: 1px solid #e7cdcf;
   border-radius: 6px;
-  background: #f8eeee;
-  box-sizing: border-box;
-}
-
-.transaction-row > span {
-  color: #350609;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.4;
-}
-
-.transaction-status {
-  flex-shrink: 0;
+  background: #fff;
+  color: #927a7b;
   font-family: Arial, sans-serif;
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.transaction-status.processing {
-  color: #926022;
-}
-
-.transaction-status.pending {
-  color: #8a2828;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .details-modal .history-heading {
-  margin-top: 10px;
+  margin-top: 14px;
   margin-bottom: 8px;
 }
 
-.history-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-bottom: 9px;
-  padding: 12px 11px;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.history-card:last-child {
-  margin-bottom: 0;
-}
-
-.history-card strong {
-  color: #350609;
-  font-size: 10px;
-  line-height: 1.4;
-}
-
-.history-card span {
-  color: #a18b8c;
-  font-family: Arial, sans-serif;
-  font-size: 9px;
-}
-
+/* RESPONSIVE */
 @media (max-width: 600px) {
   .students-page {
     padding: 22px 15px;
@@ -551,6 +663,14 @@ onBeforeUnmount(() => {
 
   .students-heading h1 {
     font-size: 20px;
+  }
+
+  .students-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .search-input {
+    flex-basis: 100%;
   }
 
   .students-table th,

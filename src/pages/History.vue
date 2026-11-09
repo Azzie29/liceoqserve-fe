@@ -1,7 +1,6 @@
 
 <template>
   <main class="main-content">
-    <!-- History heading -->
     <section class="history-heading">
       <h1>HISTORY</h1>
       <p>
@@ -9,33 +8,41 @@
       </p>
     </section>
 
-    <!-- History records -->
     <section class="history-card">
-      <article
-        v-for="item in historyItems"
-        :key="item.id"
-        class="history-row"
-      >
-        <div class="history-info">
-          <h3>{{ item.title }}</h3>
-          <span>{{ item.date }}</span>
-        </div>
-
-        <button
-          type="button"
-          class="view-details"
-          @click="viewDetails(item)"
-        >
-          View details
-        </button>
-      </article>
-
-      <div v-if="historyItems.length === 0" class="empty-state">
-        No history records available.
+      <div v-if="isLoading" class="empty-state">
+        Loading history records...
       </div>
+
+      <div v-else-if="errorMessage" class="empty-state error-state">
+        {{ errorMessage }}
+      </div>
+
+      <template v-else>
+        <article
+          v-for="item in historyItems"
+          :key="item.id"
+          class="history-row"
+        >
+          <div class="history-info">
+            <h3>{{ item.title }}</h3>
+            <span>{{ item.date }}</span>
+          </div>
+
+          <button
+            type="button"
+            class="view-details"
+            @click="viewDetails(item)"
+          >
+            View details
+          </button>
+        </article>
+
+        <div v-if="historyItems.length === 0" class="empty-state">
+          No history records available.
+        </div>
+      </template>
     </section>
 
-    <!-- History Details Modal -->
     <Teleport to="body">
       <div
         v-if="selectedItem"
@@ -48,7 +55,6 @@
           aria-modal="true"
           aria-labelledby="history-modal-title"
         >
-          <!-- Close is beside History Details -->
           <div class="modal-header">
             <span class="modal-label">History Details</span>
 
@@ -61,7 +67,6 @@
             </button>
           </div>
 
-          <!-- Selected record title and date -->
           <div class="modal-title-section">
             <h2 id="history-modal-title">
               {{ selectedItem.title }}
@@ -72,7 +77,6 @@
             </p>
           </div>
 
-          <!-- Audit information -->
           <div class="audit-grid">
             <div class="audit-field">
               <span>What happened</span>
@@ -105,7 +109,6 @@
             </div>
           </div>
 
-          <!-- Record-specific notes -->
           <div class="audit-notes">
             <strong>
               Notes/Instructions: {{ selectedItem.notes }}
@@ -119,47 +122,300 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
+const historyItems = ref([])
 const selectedItem = ref(null)
 
-const historyItems = ref([
-  {
-    id: 'HIS-001',
-    title: 'Request Completed - Form 137',
-    date: 'Oct. 2, 2026 - 4:17 PM',
-    activity: 'Request Completed- Form',
-    student: 'Juan Dela Cruz',
-    transactionId: 'REQ-2026-00125',
-    previousStatus: 'Processing',
-    newStatus: 'Completed',
-    performedBy: 'Office of Student Affairs Staff',
-    notes: 'All required information was verified'
-  },
-  {
-    id: 'HIS-002',
-    title: 'Appointment Completed - Student Consultation',
-    date: 'Oct. 2, 2026 - 3:42 PM',
-    activity: 'Appointment Completed- Student Consultation',
-    student: 'Juan Dela Cruz',
-    transactionId: 'APT-2026-0081',
-    previousStatus: 'Confirmed',
-    newStatus: 'Completed',
-    performedBy: 'Office of Student Affairs Staff',
-    notes: 'Appointment completed by assigned staff.'
-  },
-  {
-    id: 'HIS-003',
-    title: 'Request Updated - Student Certification',
-    date: 'Oct. 2, 2026 - 2:35 PM',
-    activity: 'Request Updated - Student Certification',
-    student: 'Juan Dela Cruz',
-    transactionId: 'REQ-2026-0077',
-    previousStatus: 'Pending',
-    newStatus: 'Processing',
-    performedBy: 'Office of Student Affairs Staff',
-    notes: 'Processing instructions were sent to the student.'
+const isLoading = ref(false)
+const errorMessage = ref('')
+
+let historyChannel = null
+
+// Format database date
+function formatDate(dateValue) {
+  if (!dateValue) return 'Date not available'
+
+  const date = new Date(dateValue)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Date not available'
   }
-])
+
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+}
+
+// Get student and staff names
+function getProfileName(profile) {
+  if (!profile) return 'Not recorded'
+
+  return profile.full_name || 'Not recorded'
+}
+
+// Fetch history records
+async function fetchHistory() {
+  isLoading.value = true
+  errorMessage.value = ''
+
+  try {
+    // 1. Get currently authenticated user
+    const {
+      data: { user },
+      error: authError
+    } = await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    if (!user) {
+      throw new Error('Please log in to view history records.')
+    }
+
+    // 2. Get current staff profile and office
+    const { data: staffProfile, error: profileError } =
+      await supabase
+        .from('profiles')
+        .select('id, full_name, role, office_id')
+        .eq('id', user.id)
+        .single()
+
+    if (profileError) throw profileError
+
+    if (!staffProfile.office_id) {
+      throw new Error('Your account is not assigned to an office.')
+    }
+
+    // 3. Get history records
+    const { data: historyData, error: historyError } =
+      await supabase
+        .from('service_history')
+        .select(`
+          id,
+          student_id,
+          service_id,
+          transaction_type,
+          transaction_id,
+          title,
+          final_status,
+          completed_at,
+          created_at
+        `)
+        .order('created_at', { ascending: false })
+
+    if (historyError) throw historyError
+
+    if (!historyData || historyData.length === 0) {
+      historyItems.value = []
+      return
+    }
+
+    // 4. Get services assigned to the current staff office
+    const { data: officeServices, error: servicesError } =
+      await supabase
+        .from('office_services')
+        .select('id, name, office_id')
+        .eq('office_id', staffProfile.office_id)
+
+    if (servicesError) throw servicesError
+
+    const serviceMap = new Map(
+      (officeServices || []).map(service => [
+        service.id,
+        service
+      ])
+    )
+
+    // Only display history belonging to the current office
+    const officeHistory = historyData.filter(item =>
+      serviceMap.has(item.service_id)
+    )
+
+    if (officeHistory.length === 0) {
+      historyItems.value = []
+      return
+    }
+
+    // 5. Collect student IDs and transaction IDs
+    const studentIds = [
+      ...new Set(
+        officeHistory
+          .map(item => item.student_id)
+          .filter(Boolean)
+      )
+    ]
+
+    const requestIds = officeHistory
+      .filter(item =>
+        String(item.transaction_type).toLowerCase() === 'request'
+      )
+      .map(item => item.transaction_id)
+      .filter(Boolean)
+
+    const appointmentIds = officeHistory
+      .filter(item =>
+        String(item.transaction_type).toLowerCase() === 'appointment'
+      )
+      .map(item => item.transaction_id)
+      .filter(Boolean)
+
+    // 6. Fetch related records
+    const [
+      studentsResult,
+      requestsResult,
+      appointmentsResult
+    ] = await Promise.all([
+      studentIds.length
+        ? supabase
+            .from('profiles')
+            .select('id, full_name, student_id')
+            .in('id', studentIds)
+        : Promise.resolve({ data: [], error: null }),
+
+      requestIds.length
+        ? supabase
+            .from('service_requests')
+            .select('id, title, status, staff_notes, handled_by')
+            .in('id', requestIds)
+        : Promise.resolve({ data: [], error: null }),
+
+      appointmentIds.length
+        ? supabase
+            .from('appointments')
+            .select('id, purpose, status, staff_notes, handled_by')
+            .in('id', appointmentIds)
+        : Promise.resolve({ data: [], error: null })
+    ])
+
+    if (studentsResult.error) throw studentsResult.error
+    if (requestsResult.error) throw requestsResult.error
+    if (appointmentsResult.error) throw appointmentsResult.error
+
+    // 7. Create lookup maps
+    const studentMap = new Map(
+      (studentsResult.data || []).map(student => [
+        student.id,
+        student
+      ])
+    )
+
+    const requestMap = new Map(
+      (requestsResult.data || []).map(request => [
+        request.id,
+        request
+      ])
+    )
+
+    const appointmentMap = new Map(
+      (appointmentsResult.data || []).map(appointment => [
+        appointment.id,
+        appointment
+      ])
+    )
+
+    // 8. Get staff IDs who handled transactions
+    const handlerIds = [
+      ...new Set([
+        ...(requestsResult.data || []).map(item => item.handled_by),
+        ...(appointmentsResult.data || []).map(item => item.handled_by)
+      ].filter(Boolean))
+    ]
+
+    let handlerMap = new Map()
+
+    if (handlerIds.length > 0) {
+      const { data: handlers, error: handlersError } =
+        await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', handlerIds)
+
+      if (handlersError) throw handlersError
+
+      handlerMap = new Map(
+        (handlers || []).map(handler => [
+          handler.id,
+          handler
+        ])
+      )
+    }
+
+    // 9. Format records for the History UI
+    historyItems.value = officeHistory.map(item => {
+      const transactionType =
+        String(item.transaction_type).toLowerCase()
+
+      const isRequest = transactionType === 'request'
+
+      const transaction = isRequest
+        ? requestMap.get(item.transaction_id)
+        : appointmentMap.get(item.transaction_id)
+
+      const student = studentMap.get(item.student_id)
+      const service = serviceMap.get(item.service_id)
+
+      const handler = transaction?.handled_by
+        ? handlerMap.get(transaction.handled_by)
+        : null
+
+      const serviceName = service?.name || item.title || 'Service'
+
+      const transactionTitle = isRequest
+        ? transaction?.title || item.title || serviceName
+        : transaction?.purpose || item.title || serviceName
+
+      const activity = isRequest
+        ? `Request Completed - ${serviceName}`
+        : `Appointment Completed - ${serviceName}`
+
+      const title = isRequest
+        ? `Request Completed - ${transactionTitle}`
+        : `Appointment Completed - ${transactionTitle}`
+
+      return {
+        id: item.id,
+        title,
+        date: formatDate(item.completed_at || item.created_at),
+
+        activity,
+
+        student: student
+          ? `${student.full_name || 'Unknown Student'}${
+              student.student_id
+                ? ` (${student.student_id})`
+                : ''
+            }`
+          : 'Not available',
+
+        transactionId: item.transaction_id || 'Not available',
+
+        // No previous-status field exists in the confirmed schema.
+        previousStatus: 'Not recorded',
+
+        newStatus: item.final_status || 'Not recorded',
+
+        performedBy: getProfileName(handler),
+
+        notes: transaction?.staff_notes || 'No notes recorded.'
+      }
+    })
+
+  } catch (error) {
+    console.error('Error fetching history:', error)
+
+    errorMessage.value =
+      error.message || 'Unable to load history records.'
+
+    historyItems.value = []
+
+  } finally {
+    isLoading.value = false
+  }
+}
 
 function viewDetails(item) {
   selectedItem.value = item
@@ -176,11 +432,33 @@ function handleKeydown(event) {
 }
 
 onMounted(() => {
+  fetchHistory()
+
   window.addEventListener('keydown', handleKeydown)
+
+  // Listen for new history records
+  historyChannel = supabase
+    .channel('osa-history-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'service_history'
+      },
+      () => {
+        fetchHistory()
+      }
+    )
+    .subscribe()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+
+  if (historyChannel) {
+    supabase.removeChannel(historyChannel)
+  }
 })
 </script>
 
@@ -204,7 +482,7 @@ onUnmounted(() => {
   color: #59070d;
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .history-heading p {
@@ -212,6 +490,7 @@ onUnmounted(() => {
   color: #987e7e;
   font-size: 10px;
   line-height: 1.6;
+  font-weight: 600;
 }
 
 /* HISTORY RECORDS */
@@ -253,6 +532,7 @@ onUnmounted(() => {
 .history-info span {
   color: #8e7979;
   font-size: 10px;
+  font-weight: 500;
 }
 
 .view-details {
@@ -275,7 +555,12 @@ onUnmounted(() => {
   padding: 28px 15px;
   color: #907879;
   font-size: 11px;
+  font-weight: 600;
   text-align: center;
+}
+
+.error-state {
+  color: #a32632;
 }
 
 /* MODAL OVERLAY */
@@ -306,7 +591,7 @@ onUnmounted(() => {
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.06);
 }
 
-/* HEADER: History Details LEFT, Close RIGHT */
+/* MODAL HEADER */
 .history-modal .modal-header {
   position: static;
   display: flex;
@@ -326,14 +611,12 @@ onUnmounted(() => {
   margin: 0;
   color: #a58d8e;
   font-size: 9px;
-  font-weight: 400;
+  font-weight: 600;
   letter-spacing: 0.7px;
 }
 
 .history-modal .modal-close {
   position: static;
-  top: auto;
-  right: auto;
   flex-shrink: 0;
   display: inline-block;
   margin: 0;
@@ -343,7 +626,7 @@ onUnmounted(() => {
   color: #a58d8e;
   font-family: Arial, Helvetica, sans-serif;
   font-size: 9px;
-  font-weight: 400;
+  font-weight: 600;
   letter-spacing: 0.5px;
   line-height: normal;
   cursor: pointer;
@@ -359,7 +642,7 @@ onUnmounted(() => {
   color: #59070d;
   font-family: Arial, Helvetica, sans-serif;
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 800;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -368,10 +651,11 @@ onUnmounted(() => {
   margin: 3px 0 25px;
   color: #76696a;
   font-size: 12px;
+  font-weight: 500;
   line-height: 1.4;
 }
 
-/* TWO-COLUMN AUDIT INFORMATION */
+/* AUDIT INFORMATION */
 .audit-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -388,6 +672,7 @@ onUnmounted(() => {
   margin-bottom: 4px;
   color: #7f7273;
   font-size: 12px;
+  font-weight: 600;
   line-height: 1.3;
 }
 
@@ -395,11 +680,12 @@ onUnmounted(() => {
   margin: 0;
   color: #59070d;
   font-size: 12px;
+  font-weight: 600;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
-/* NOTES / INSTRUCTIONS */
+/* NOTES */
 .audit-notes {
   display: flex;
   align-items: center;
@@ -417,67 +703,6 @@ onUnmounted(() => {
   font-size: 9px;
   font-weight: 700;
   line-height: 1.4;
-}
-
-
-/* BOLDER FONTS - HISTORY PAGE */
-
-/* History heading */
-.history-heading h1 {
-  font-weight: 800;
-}
-
-.history-heading p {
-  font-weight: 600;
-}
-
-/* History records */
-.history-info h3 {
-  font-weight: 700;
-}
-
-.history-info span {
-  font-weight: 500;
-}
-
-.view-details {
-  font-weight: 700;
-}
-
-/* Modal heading */
-.history-modal .modal-label {
-  font-weight: 600;
-}
-
-.history-modal .modal-close {
-  font-weight: 600;
-}
-
-.modal-title-section h2 {
-  font-weight: 800;
-}
-
-.modal-date {
-  font-weight: 500;
-}
-
-/* Audit information */
-.audit-field > span {
-  font-weight: 600;
-}
-
-.audit-field p {
-  font-weight: 600;
-}
-
-/* Notes / Instructions */
-.audit-notes strong {
-  font-weight: 700;
-}
-
-/* Empty state */
-.empty-state {
-  font-weight: 600;
 }
 
 /* ACCESSIBILITY */

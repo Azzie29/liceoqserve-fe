@@ -1,24 +1,54 @@
+
 <script setup>
 import { ref } from 'vue'
+import { supabase } from '../lib/supabase'
+
+const emit = defineEmits(['login'])
 
 const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
 const errorMessage = ref('')
+const isLoading = ref(false)
 
-function login() {
+async function login() {
   errorMessage.value = ''
 
   if (!email.value.trim() || !password.value) {
-    errorMessage.value = 'Please enter your university email and password.'
+    errorMessage.value = 'Please enter your email and password.'
     return
   }
 
-  // Demo login only. Connect this to your authentication backend later.
-  sessionStorage.setItem('staffLoggedIn', 'true')
-  sessionStorage.setItem('staffEmail', email.value.trim())
+  if (isLoading.value) return
 
-  window.location.reload()
+  isLoading.value = true
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.value.trim(),
+      password: password.value
+    })
+
+    if (error) {
+      throw error
+    }
+
+    emit('login', data.user)
+  } catch (error) {
+    console.error('Supabase login error:', error)
+
+    if (error.message?.toLowerCase().includes('email not confirmed')) {
+      errorMessage.value = 'Please confirm your email before signing in.'
+    } else if (
+      error.message?.toLowerCase().includes('invalid login credentials')
+    ) {
+      errorMessage.value = 'Incorrect email or password.'
+    } else {
+      errorMessage.value = error.message || 'Unable to sign in. Please try again.'
+    }
+  } finally {
+    isLoading.value = false
+  }
 }
 </script>
 
@@ -47,11 +77,16 @@ function login() {
     <section class="form-panel">
       <div class="form-content">
         <p class="eyebrow dark">WELCOME BACK</p>
+
         <h1>Sign in to your account</h1>
-        <p class="subtitle">Enter your service/office account details to continue.</p>
+
+        <p class="subtitle">
+          Enter your service/office account details to continue.
+        </p>
 
         <form class="login-form" @submit.prevent="login">
           <label for="email">University Email</label>
+
           <input
             id="email"
             v-model="email"
@@ -59,9 +94,11 @@ function login() {
             placeholder="servicestaff@liceo.edu.ph"
             autocomplete="username"
             required
+            :disabled="isLoading"
           />
 
           <label for="password">Password</label>
+
           <div class="password-field">
             <input
               id="password"
@@ -70,15 +107,30 @@ function login() {
               placeholder="Enter your password"
               autocomplete="current-password"
               required
+              :disabled="isLoading"
             />
-            <button type="button" class="show-button" @click="showPassword = !showPassword">
+
+            <button
+              type="button"
+              class="show-button"
+              @click="showPassword = !showPassword"
+              :disabled="isLoading"
+            >
               {{ showPassword ? 'Hide' : 'Show' }}
             </button>
           </div>
 
-          <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
+          <p v-if="errorMessage" class="error-message">
+            {{ errorMessage }}
+          </p>
 
-          <button class="submit-button" type="submit">Sign In</button>
+          <button
+            class="submit-button"
+            type="submit"
+            :disabled="isLoading"
+          >
+            {{ isLoading ? 'Signing In...' : 'Sign In' }}
+          </button>
         </form>
 
         <p class="privacy-note">
@@ -289,6 +341,11 @@ function login() {
   cursor: pointer;
 }
 
+.show-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .submit-button {
   min-height: 46px;
   border: 0;
@@ -297,10 +354,16 @@ function login() {
   background: #650f18;
   font-weight: bold;
   cursor: pointer;
+  transition: background 0.2s ease;
 }
 
-.submit-button:hover {
+.submit-button:hover:not(:disabled) {
   background: #4d080e;
+}
+
+.submit-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .error-message {

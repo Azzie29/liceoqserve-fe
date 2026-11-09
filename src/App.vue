@@ -1,5 +1,7 @@
+
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { supabase } from './lib/supabase.js'
 
 import Header from './components/Header.vue'
 import Sidebar from './components/Sidebar.vue'
@@ -15,9 +17,9 @@ import Schedule from './pages/Schedule.vue'
 import Profile from './pages/Profile.vue'
 import RescheduleAppointment from './pages/RescheduleAppointment.vue'
 
-const isLoggedIn = ref(
-  sessionStorage.getItem('liceoqserveLoggedIn') === 'true'
-)
+const isLoggedIn = ref(false)
+const isCheckingSession = ref(true)
+const currentUser = ref(null)
 
 const showLogoutConfirm = ref(false)
 
@@ -25,10 +27,13 @@ const activePage = ref('Dashboard')
 const selectedAppointment = ref(null)
 const appointmentsVersion = ref(0)
 
+const requestFilter = ref('All')
+
+let authListener = null
+
 const pages = {
   Dashboard,
   Appointments,
-  Request: Requests,
   Students,
   Notifications,
   History,
@@ -44,11 +49,14 @@ const currentPage = computed(() => {
   return pages[activePage.value] || Dashboard
 })
 
-function navigateToPage(page) {
+function navigateToPage(page, filter = 'All') {
   activePage.value = page
 
   if (page === 'Request') {
     selectedAppointment.value = null
+    requestFilter.value = filter
+  } else {
+    requestFilter.value = 'All'
   }
 }
 
@@ -111,37 +119,94 @@ function cancelLogout() {
   showLogoutConfirm.value = false
 }
 
-function confirmLogout() {
-  showLogoutConfirm.value = false
-  isLoggedIn.value = false
+async function confirmLogout() {
+  try {
+    const { error } = await supabase.auth.signOut()
 
-  sessionStorage.removeItem('liceoqserveLoggedIn')
-  sessionStorage.removeItem('returnToAppointments')
-  sessionStorage.removeItem('rescheduleAppointmentId')
+    if (error) {
+      throw error
+    }
 
-  selectedAppointment.value = null
-  activePage.value = 'Dashboard'
-}
+    showLogoutConfirm.value = false
+    isLoggedIn.value = false
+    currentUser.value = null
 
-function handleLogin() {
-  isLoggedIn.value = true
-  sessionStorage.setItem('liceoqserveLoggedIn', 'true')
-  activePage.value = 'Dashboard'
-}
-
-onMounted(() => {
-  const requestPage = sessionStorage.getItem('returnToAppointments')
-
-  if (requestPage === 'true' && isLoggedIn.value) {
-    activePage.value = 'Appointments'
+    sessionStorage.removeItem('liceoqserveLoggedIn')
     sessionStorage.removeItem('returnToAppointments')
+    sessionStorage.removeItem('rescheduleAppointmentId')
+
+    selectedAppointment.value = null
+    activePage.value = 'Dashboard'
+    requestFilter.value = 'All'
+  } catch (error) {
+    console.error('Supabase logout error:', error)
+    window.alert('Unable to log out. Please try again.')
   }
+}
+
+function handleLogin(user) {
+  currentUser.value = user
+  isLoggedIn.value = true
+  activePage.value = 'Dashboard'
+}
+
+onMounted(async () => {
+  // Listen for Supabase login, logout, and session changes.
+  const { data } = supabase.auth.onAuthStateChange(
+    (_event, session) => {
+      currentUser.value = session?.user ?? null
+      isLoggedIn.value = Boolean(session?.user)
+
+      if (!session?.user) {
+        activePage.value = 'Dashboard'
+        selectedAppointment.value = null
+      }
+    }
+  )
+
+  authListener = data.subscription
+
+  // Restore an existing Supabase session after refreshing the page.
+  try {
+    const { data: sessionData, error } = await supabase.auth.getSession()
+
+    if (error) {
+      throw error
+    }
+
+    currentUser.value = sessionData.session?.user ?? null
+    isLoggedIn.value = Boolean(sessionData.session?.user)
+
+    const requestPage = sessionStorage.getItem('returnToAppointments')
+
+    if (requestPage === 'true' && isLoggedIn.value) {
+      activePage.value = 'Appointments'
+      sessionStorage.removeItem('returnToAppointments')
+    }
+  } catch (error) {
+    console.error('Unable to restore Supabase session:', error)
+    isLoggedIn.value = false
+    currentUser.value = null
+  } finally {
+    isCheckingSession.value = false
+  }
+})
+
+onUnmounted(() => {
+  authListener?.unsubscribe()
 })
 </script>
 
 <template>
+  <div v-if="isCheckingSession" class="loading-screen">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <p>Checking your session...</p>
+    </div>
+  </div>
+
   <LoginView
-    v-if="!isLoggedIn"
+    v-else-if="!isLoggedIn"
     @login="handleLogin"
   />
 
@@ -164,6 +229,11 @@ onMounted(() => {
           v-if="activePage === 'Appointments'"
           :key="appointmentsVersion"
           @reschedule="openReschedule"
+        />
+
+        <Requests
+          v-else-if="activePage === 'Request'"
+          :initial-filter="requestFilter"
         />
 
         <RescheduleAppointment
@@ -256,7 +326,43 @@ body {
   background: #efdfdf;
 }
 
-/* Logout confirmation */
+.loading-screen {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background: #efdfdf;
+  color: #51090e;
+  font-family: Arial, sans-serif;
+}
+
+.loading-content {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.loading-content p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 4px solid #e5cfd0;
+  border-top-color: #650f18;
+  border-radius: 50%;
+  animation: loading-spin 0.8s linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .logout-overlay {
   position: fixed;
   inset: 0;

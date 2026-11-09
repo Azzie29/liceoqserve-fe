@@ -1,55 +1,28 @@
-<script setup>
 
-import { ref, computed, watch } from 'vue'
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
 const emit = defineEmits(['reschedule'])
+
+const NICO_STUDENT_ID = '2921235d-a3c7-4864-8dbc-b517081eec7d'
 
 const filters = [
   'All',
   'Pending',
   'Confirmed',
+  'Reschedule Requested',
   'Completed',
   'Cancelled',
   'No-Show'
 ]
 
-const STORAGE_KEY = 'appointmentsData'
-
-const defaultAppointments = [
-  {
-    id: 'OSA-2026-0099',
-    date: '2026-10-04',
-    time: '13:00',
-    student: 'Maria Santos',
-    studentId: '2022-00341',
-    service: 'Student ID Application',
-    status: 'Pending'
-  }
-]
-
-function loadAppointments() {
-  try {
-    const saved = sessionStorage.getItem(STORAGE_KEY)
-
-    if (saved !== null) {
-      const parsed = JSON.parse(saved)
-      return Array.isArray(parsed) ? parsed : [...defaultAppointments]
-    }
-
-    sessionStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(defaultAppointments)
-    )
-
-    return defaultAppointments.map(appointment => ({ ...appointment }))
-  } catch (error) {
-    console.error('Unable to load appointments:', error)
-    return defaultAppointments.map(appointment => ({ ...appointment }))
-  }
-}
-
-const appointments = ref(loadAppointments())
+const appointments = ref([])
 const selectedFilter = ref('All')
+
+const loading = ref(false)
+const saving = ref(false)
+const errorMessage = ref('')
 
 const showModal = ref(false)
 const selectedAppointment = ref(null)
@@ -63,7 +36,7 @@ const modalContent = computed(() => {
       tone: 'maroon'
     },
     completed: {
-      title: 'Completed this appointment?',
+      title: 'Complete this appointment?',
       button: 'Confirm completed',
       tone: 'maroon'
     },
@@ -73,7 +46,7 @@ const modalContent = computed(() => {
       tone: 'red'
     },
     noShow: {
-      title: 'No-Show this appointment?',
+      title: 'Mark as No-Show?',
       button: 'Confirm no-show',
       tone: 'red'
     }
@@ -88,55 +61,135 @@ const filteredAppointments = computed(() => {
   }
 
   return appointments.value.filter(
-    appointment => appointment.status === selectedFilter.value
+    appointment => appointment.displayStatus === selectedFilter.value
   )
 })
 
-function saveAppointments() {
-  try {
-    sessionStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(appointments.value)
-    )
-    return true
-  } catch (error) {
-    console.error('Unable to save appointments:', error)
-    window.alert('Unable to save the appointment. Please try again.')
-    return false
+function formatStatus(status) {
+  const statusMap = {
+    pending: 'Pending',
+    confirmed: 'Confirmed',
+    reschedule_requested: 'Reschedule Requested',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    rejected: 'Rejected',
+    no_show: 'No-Show'
   }
+
+  return statusMap[status] || status
 }
 
 function formatDate(date) {
   if (!date) return 'Date not set'
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    const [year, month, day] = date.split('-')
-    const months = [
-      'Jan.', 'Feb.', 'Mar.', 'Apr.', 'May', 'Jun.',
-      'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.'
-    ]
+  const parsedDate = new Date(date)
 
-    return `${months[Number(month) - 1]} ${Number(day)}, ${year}`
+  if (Number.isNaN(parsedDate.getTime())) {
+    return 'Date not set'
   }
 
-  return date
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'Asia/Manila'
+  }).format(parsedDate)
 }
 
 function formatTime(time) {
   if (!time) return 'Time not set'
 
-  if (/^\d{1,2}:\d{2}$/.test(time)) {
-    const [hourString, minutes] = time.split(':')
-    const hour = Number(hourString)
+  const parsedDate = new Date(time)
 
-    return `${hour % 12 || 12}:${minutes} ${hour >= 12 ? 'PM' : 'AM'}`
+  if (Number.isNaN(parsedDate.getTime())) {
+    return 'Time not set'
   }
 
-  return time
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Manila'
+  }).format(parsedDate)
 }
 
 function getStudentName(appointment) {
-  return appointment?.student || appointment?.studentName || 'Student'
+  return appointment?.student?.full_name || 'Unknown Student'
+}
+
+function getStudentNumber(appointment) {
+  return appointment?.student?.student_id || 'No student number'
+}
+
+function getServiceName(appointment) {
+  return appointment?.service?.name || 'Unknown Service'
+}
+
+function mapAppointment(row) {
+  return {
+    ...row,
+    date: row.scheduled_at,
+    time: row.scheduled_at,
+    studentId: row.student?.student_id || 'No student number',
+    displayStatus: formatStatus(row.status)
+  }
+}
+
+// LOAD NICO DA APPOINTMENTS FROM SUPABASE
+async function loadAppointments() {
+  loading.value = true
+  errorMessage.value = ''
+
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(`
+        id,
+        student_id,
+        service_id,
+        scheduled_at,
+        end_at,
+        status,
+        purpose,
+        student_notes,
+        staff_notes,
+        handled_by,
+        reschedule_requested_at,
+        created_at,
+        updated_at,
+        student:profiles!appointments_student_id_fkey (
+          id,
+          student_id,
+          full_name,
+          university_email,
+          program,
+          year_level
+        ),
+        service:office_services!appointments_service_id_fkey (
+          id,
+          name,
+          description,
+          service_type,
+          office_id
+        )
+      `)
+      .eq('student_id', NICO_STUDENT_ID)
+      .order('scheduled_at', { ascending: true })
+
+    if (error) throw error
+
+    appointments.value = (data || []).map(mapAppointment)
+
+  } catch (error) {
+    console.error('Error loading Nico Da appointments:', error)
+
+    errorMessage.value =
+      error.message || 'Unable to load appointments from Supabase.'
+
+    appointments.value = []
+  } finally {
+    loading.value = false
+  }
 }
 
 function openModal(appointment, action) {
@@ -146,65 +199,94 @@ function openModal(appointment, action) {
 }
 
 function closeModal() {
+  if (saving.value) return
+
   showModal.value = false
   selectedAppointment.value = null
   selectedAction.value = ''
 }
 
-function confirmAction() {
-  if (!selectedAppointment.value) return
+// UPDATE APPOINTMENT STATUS IN SUPABASE
+async function confirmAction() {
+  if (!selectedAppointment.value || saving.value) return
 
   const statusMap = {
-    confirm: 'Confirmed',
-    completed: 'Completed',
-    cancel: 'Cancelled',
-    noShow: 'No-Show'
+    confirm: 'confirmed',
+    completed: 'completed',
+    cancel: 'cancelled',
+    noShow: 'no_show'
   }
 
   const newStatus = statusMap[selectedAction.value]
 
   if (!newStatus) return
 
-  const appointment = appointments.value.find(
-    item => String(item.id) === String(selectedAppointment.value.id)
-  )
+  saving.value = true
+  errorMessage.value = ''
 
-  if (!appointment) {
+  try {
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({
+        status: newStatus,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', selectedAppointment.value.id)
+      .eq('student_id', NICO_STUDENT_ID)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      throw new Error(
+        'Appointment was not updated. Please check your office permissions.'
+      )
+    }
+
     closeModal()
-    window.alert('Appointment not found.')
-    return
+
+    await loadAppointments()
+
+  } catch (error) {
+    console.error('Error updating appointment:', error)
+
+    window.alert(
+      error.message || 'Unable to update appointment. Please try again.'
+    )
+  } finally {
+    saving.value = false
   }
-
-  const previousStatus = appointment.status
-  appointment.status = newStatus
-
-  if (!saveAppointments()) {
-    appointment.status = previousStatus
-    return
-  }
-
-  closeModal()
 }
 
+// SEND APPOINTMENT TO THE RESCHEDULE PAGE
 function rescheduleAppointment(appointment) {
-  emit('reschedule', { ...appointment })
+  emit('reschedule', {
+    ...appointment,
+    date: appointment.scheduled_at,
+    time: appointment.scheduled_at,
+    student: getStudentName(appointment),
+    studentId: getStudentNumber(appointment),
+    service: getServiceName(appointment),
+    status: appointment.displayStatus
+  })
 }
 
-watch(selectedFilter, () => {
-  // Keep the selected filter in sync with the displayed list.
+onMounted(() => {
+  loadAppointments()
 })
-
 </script>
 
 <template>
-
   <section class="appointments-page">
 
     <header class="appointments-heading">
-      <h1>APPOINTMENTS</h1>
-      <p>
-        Confirm, reschedule and complete Office of Student Affairs appointments.
-      </p>
+      <div>
+        <h1>APPOINTMENTS</h1>
+        <p>
+          Confirm, reschedule and complete Office of Student Affairs appointments.
+        </p>
+      </div>
     </header>
 
     <nav class="appointment-filters">
@@ -218,9 +300,34 @@ watch(selectedFilter, () => {
       >
         {{ filter }}
       </button>
+
+      <button
+        type="button"
+        class="refresh-button"
+        :disabled="loading"
+        @click="loadAppointments"
+      >
+        {{ loading ? 'Loading...' : 'Refresh' }}
+      </button>
     </nav>
 
-    <div class="appointment-list">
+    <div v-if="errorMessage" class="error-state">
+      <p>{{ errorMessage }}</p>
+
+      <button
+        type="button"
+        class="retry-button"
+        @click="loadAppointments"
+      >
+        Try Again
+      </button>
+    </div>
+
+    <div v-else-if="loading && appointments.length === 0" class="empty-state">
+      Loading Nico Da appointments from Supabase...
+    </div>
+
+    <div v-else class="appointment-list">
 
       <article
         v-for="appointment in filteredAppointments"
@@ -229,22 +336,26 @@ watch(selectedFilter, () => {
       >
 
         <div class="appointment-date">
-          <span>{{ formatDate(appointment.date) }}</span>
-          <span>{{ formatTime(appointment.time) }}</span>
+          <span>{{ formatDate(appointment.scheduled_at) }}</span>
+          <span>{{ formatTime(appointment.scheduled_at) }}</span>
         </div>
 
         <h2 class="appointment-title">
-          {{ getStudentName(appointment) }} · {{ appointment.service }}
+          {{ getStudentName(appointment) }} · {{ getServiceName(appointment) }}
         </h2>
 
         <p class="appointment-reference">
-          {{ appointment.studentId }} · {{ appointment.id }}
+          {{ getStudentNumber(appointment) }} · {{ appointment.id }}
+        </p>
+
+        <p v-if="appointment.purpose" class="appointment-purpose">
+          Purpose: {{ appointment.purpose }}
         </p>
 
         <div class="appointment-actions">
 
           <button
-            v-if="appointment.status === 'Pending'"
+            v-if="appointment.status === 'pending'"
             type="button"
             class="action-button primary-action"
             @click="openModal(appointment, 'confirm')"
@@ -253,7 +364,7 @@ watch(selectedFilter, () => {
           </button>
 
           <button
-            v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+            v-if="['pending', 'confirmed'].includes(appointment.status)"
             type="button"
             class="action-button"
             @click="rescheduleAppointment(appointment)"
@@ -262,7 +373,7 @@ watch(selectedFilter, () => {
           </button>
 
           <button
-            v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+            v-if="['pending', 'confirmed'].includes(appointment.status)"
             type="button"
             class="action-button"
             @click="openModal(appointment, 'completed')"
@@ -271,7 +382,7 @@ watch(selectedFilter, () => {
           </button>
 
           <button
-            v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+            v-if="['pending', 'confirmed'].includes(appointment.status)"
             type="button"
             class="action-button"
             @click="openModal(appointment, 'cancel')"
@@ -280,7 +391,7 @@ watch(selectedFilter, () => {
           </button>
 
           <button
-            v-if="['Pending', 'Confirmed'].includes(appointment.status)"
+            v-if="['pending', 'confirmed'].includes(appointment.status)"
             type="button"
             class="action-button"
             @click="openModal(appointment, 'noShow')"
@@ -288,13 +399,11 @@ watch(selectedFilter, () => {
             No-Show
           </button>
 
-          <!-- Pending is hidden; other status badges remain unchanged. -->
           <span
-            v-if="appointment.status !== 'Pending'"
             class="status-badge"
-            :class="appointment.status.toLowerCase().replace(/[^a-z]+/g, '-')"
+            :class="appointment.displayStatus.toLowerCase().replace(/[^a-z]+/g, '-')"
           >
-            {{ appointment.status }}
+            {{ appointment.displayStatus }}
           </span>
 
         </div>
@@ -333,15 +442,16 @@ watch(selectedFilter, () => {
 
           <p class="modal-description">
             {{ getStudentName(selectedAppointment) }} ·
-            {{ selectedAppointment.service }} ·
-            {{ formatDate(selectedAppointment.date) }} at
-            {{ formatTime(selectedAppointment.time) }}
+            {{ getServiceName(selectedAppointment) }} ·
+            {{ formatDate(selectedAppointment.scheduled_at) }} at
+            {{ formatTime(selectedAppointment.scheduled_at) }}
           </p>
 
           <div class="modal-actions">
             <button
               type="button"
               class="modal-button modal-back-button"
+              :disabled="saving"
               @click="closeModal"
             >
               Go Back
@@ -351,9 +461,10 @@ watch(selectedFilter, () => {
               type="button"
               class="modal-button modal-confirm-button"
               :class="`tone-${modalContent.tone}`"
+              :disabled="saving"
               @click="confirmAction"
             >
-              {{ modalContent.button }}
+              {{ saving ? 'Saving...' : modalContent.button }}
             </button>
           </div>
 
@@ -362,7 +473,6 @@ watch(selectedFilter, () => {
     </Teleport>
 
   </section>
-
 </template>
 
 <style scoped>
@@ -373,6 +483,10 @@ watch(selectedFilter, () => {
 }
 
 .appointments-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
   margin: 23px 8px 28px;
 }
 
@@ -390,6 +504,39 @@ watch(selectedFilter, () => {
   font-family: Arial, sans-serif;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.refresh-button,
+.retry-button {
+  padding: 8px 13px;
+  border: 1px solid #7a252b;
+  border-radius: 20px;
+  background: transparent;
+  color: #59080e;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.refresh-button {
+  min-height: 33px;
+  margin-left: auto;
+  padding: 7px 14px;
+  border-radius: 22px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.refresh-button:hover,
+.retry-button:hover {
+  background: #59080e;
+  color: white;
+}
+
+.refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .appointment-filters {
@@ -461,6 +608,15 @@ watch(selectedFilter, () => {
   color: #a18485;
   font-family: Arial, sans-serif;
   font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.appointment-purpose {
+  margin: 9px 0 0;
+  color: #76595b;
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .appointment-actions {
@@ -510,23 +666,26 @@ watch(selectedFilter, () => {
   font-weight: 700;
 }
 
-.status-badge.confirmed {
-  background: #d8ead9;
-  color: #285b31;
-}
-
+.status-badge.confirmed,
 .status-badge.completed {
   background: #d8ead9;
   color: #285b31;
 }
 
 .status-badge.cancelled,
-.status-badge.no-show {
+.status-badge.no-show,
+.status-badge.rejected {
   background: #f3dada;
   color: #a20f19;
 }
 
-.empty-state {
+.status-badge.reschedule-requested {
+  background: #f7e8c8;
+  color: #805515;
+}
+
+.empty-state,
+.error-state {
   width: 100%;
   max-width: 600px;
   padding: 30px 20px;
@@ -538,7 +697,15 @@ watch(selectedFilter, () => {
   text-align: center;
 }
 
-/* Confirmation modal: layout follows the supplied screenshots. */
+.error-state {
+  border-color: #e8baba;
+  background: #fff5f5;
+  color: #a20f19;
+}
+
+.error-state p {
+  overflow-wrap: anywhere;
+}
 
 .modal-overlay {
   position: fixed;
@@ -634,6 +801,11 @@ watch(selectedFilter, () => {
   cursor: pointer;
 }
 
+.modal-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .modal-back-button {
   background: transparent;
   color: #35080b;
@@ -683,6 +855,18 @@ watch(selectedFilter, () => {
 }
 
 @media (max-width: 420px) {
+  .appointments-heading {
+    align-items: flex-start;
+  }
+
+  .appointment-filters {
+    align-items: center;
+  }
+
+  .refresh-button {
+    flex-shrink: 0;
+  }
+
   .filter-button {
     padding: 7px 10px;
     font-size: 11px;
