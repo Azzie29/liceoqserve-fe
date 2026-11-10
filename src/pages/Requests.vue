@@ -1,4 +1,3 @@
-
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../lib/Supabase.js'
@@ -48,7 +47,11 @@ const statusOptions = [
   { label: 'Completed', value: 'completed' }
 ]
 
-const TARGET_SERVICE_ID = '5c2ab6fc-5f24-4573-896a-f5a11ad6625e'
+// Both existing and new OSA service IDs
+const OSA_SERVICE_IDS = [
+  '5c2ab6fc-5f24-4573-896a-f5a11ad6625e',
+  '65a94572-bce2-460f-b3e8-2ed568ee7bbf'
+]
 
 const requests = ref([])
 const loading = ref(false)
@@ -71,8 +74,8 @@ const selectedFilter = ref(
 const showSuccessModal = ref(false)
 const successMessage = ref('Request status updated successfully.')
 
-function showSuccessPopup() {
-  successMessage.value = 'Request status updated successfully.'
+function showSuccessPopup(message = 'Request status updated successfully.') {
+  successMessage.value = message
   showSuccessModal.value = true
 }
 
@@ -158,19 +161,7 @@ async function fetchRequests() {
     console.log('OSA AUTH USER:', user?.id)
     console.log('OSA AUTH ERROR:', authError)
 
-    const {
-      data: rawData,
-      error: rawError
-    } = await supabase
-      .from('service_requests')
-      .select('*')
-      .eq('service_id', TARGET_SERVICE_ID)
-      .order('submitted_at', { ascending: false })
-
-    console.log('OSA RAW REQUEST DATA:', rawData)
-    console.log('OSA RAW REQUEST COUNT:', rawData?.length)
-
-    if (rawError) throw rawError
+    if (authError) throw authError
 
     const { data, error } = await supabase
       .from('service_requests')
@@ -203,8 +194,12 @@ async function fetchRequests() {
           office_id
         )
       `)
-      .eq('service_id', TARGET_SERVICE_ID)
+      .in('service_id', OSA_SERVICE_IDS)
       .order('submitted_at', { ascending: false })
+
+    console.log('OSA REQUEST DATA:', data)
+    console.log('OSA REQUEST COUNT:', data?.length)
+    console.log('OSA REQUEST ERROR:', error)
 
     if (error) throw error
 
@@ -341,7 +336,7 @@ async function updateStatus(request, newStatus) {
 
     await fetchRequests()
 
-    showSuccessPopup()
+    showSuccessPopup('Request status updated successfully.')
 
   } catch (error) {
     console.error('Unable to update request status:', error)
@@ -428,9 +423,7 @@ async function saveAndNotify() {
       is_read: false
     }
 
-    const {
-      error: notificationError
-    } = await supabase
+    const { error: notificationError } = await supabase
       .from('notifications')
       .insert(notificationValues)
 
@@ -447,9 +440,7 @@ async function saveAndNotify() {
       return
     }
 
-    const {
-      error: timestampError
-    } = await supabase
+    const { error: timestampError } = await supabase
       .from('service_requests')
       .update({
         instructions_sent_at: new Date().toISOString()
@@ -462,7 +453,7 @@ async function saveAndNotify() {
 
     await fetchRequests()
 
-    showSuccessPopup()
+    showSuccessPopup('Request details saved and student notified successfully.')
 
   } catch (error) {
     console.error('Unable to save request details:', error)
@@ -962,4 +953,4 @@ onUnmounted(() => {
     margin: 20px 0;
   }
 }
-</style>
+</style>  

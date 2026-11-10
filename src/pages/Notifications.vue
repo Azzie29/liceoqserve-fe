@@ -1,12 +1,14 @@
 
 <template>
   <section class="notifications-page">
+
     <div class="page-heading">
       <h1>NOTIFICATIONS</h1>
       <p>Select a notification to open its related transaction.</p>
     </div>
 
     <div class="notification-toolbar">
+
       <div class="filter-group">
         <button
           v-for="filter in filters"
@@ -17,6 +19,7 @@
           @click="activeFilter = filter"
         >
           {{ filter }}
+
           <span v-if="filter === 'Unread'">
             ({{ unreadCount }})
           </span>
@@ -32,6 +35,7 @@
       >
         {{ markingAll ? 'Updating...' : 'Mark all as read' }}
       </button>
+
     </div>
 
     <div v-if="loading" class="state-message">
@@ -40,25 +44,30 @@
 
     <div v-else-if="errorMessage" class="error-message">
       {{ errorMessage }}
+
       <button type="button" @click="fetchNotifications">
         Try Again
       </button>
     </div>
 
     <div v-else class="notification-list">
+
       <article
         v-for="notification in filteredNotifications"
         :key="notification.id"
         class="notification-card"
         :class="{ unread: !notification.is_read }"
       >
+
         <div
           class="notification-dot"
           :class="{ read: notification.is_read }"
         ></div>
 
         <div class="notification-content">
+
           <div class="notification-title-row">
+
             <h3>{{ notification.title }}</h3>
 
             <span
@@ -67,6 +76,7 @@
             >
               NEW
             </span>
+
           </div>
 
           <p>{{ notification.message }}</p>
@@ -74,6 +84,7 @@
           <span class="notification-date">
             {{ formatDate(notification.created_at) }}
           </span>
+
         </div>
 
         <button
@@ -84,6 +95,7 @@
         >
           {{ openingId === notification.id ? 'Opening...' : 'Open' }}
         </button>
+
       </article>
 
       <div
@@ -91,19 +103,24 @@
         class="empty-state"
       >
         <h3>No notifications found.</h3>
+
         <p>
-          {{ activeFilter === 'Unread'
-            ? 'You have no unread notifications.'
-            : activeFilter === 'Read'
-              ? 'You have no read notifications.'
-              : 'New notifications will appear here.' }}
+          {{
+            activeFilter === 'Unread'
+              ? 'You have no unread notifications.'
+              : activeFilter === 'Read'
+                ? 'You have no read notifications.'
+                : 'New notifications will appear here.'
+          }}
         </p>
       </div>
+
     </div>
 
     <div class="notifications-footer">
       Showing {{ filteredNotifications.length }} notification(s)
     </div>
+
   </section>
 </template>
 
@@ -113,6 +130,12 @@ import { supabase } from '../lib/Supabase.js'
 
 const emit = defineEmits(['navigate'])
 
+// BOTH OSA SERVICE IDS
+const OSA_SERVICE_IDS = [
+  '5c2ab6fc-5f24-4573-896a-f5a11ad6625e',
+  '65a94572-bce2-460f-b3e8-2ed568ee7bbf'
+]
+
 const notifications = ref([])
 const loading = ref(true)
 const markingAll = ref(false)
@@ -120,10 +143,12 @@ const openingId = ref(null)
 const errorMessage = ref('')
 const currentUserId = ref(null)
 const activeFilter = ref('All')
+const syncingRequests = ref(false)
 
 const filters = ['All', 'Unread', 'Read']
 
 let notificationChannel = null
+let requestChannel = null
 
 const unreadCount = computed(() => {
   return notifications.value.filter(
@@ -147,6 +172,113 @@ const filteredNotifications = computed(() => {
   return notifications.value
 })
 
+// FETCH EXISTING NOTIFICATIONS
+async function loadNotificationRecords(userId) {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select(`
+      id,
+      recipient_id,
+      title,
+      message,
+      category,
+      related_id,
+      is_read,
+      created_at
+    `)
+    .eq('recipient_id', userId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+
+  notifications.value = data || []
+}
+
+// CREATE MISSING OSA REQUEST NOTIFICATIONS
+async function syncRequestNotifications(userId) {
+  if (syncingRequests.value) return
+
+  syncingRequests.value = true
+
+  try {
+    // Get all OSA service requests
+    const { data: requests, error: requestError } = await supabase
+      .from('service_requests')
+      .select(`
+        id,
+        student_id,
+        service_id,
+        request_type,
+        title,
+        details,
+        status,
+        submitted_at
+      `)
+      .in('service_id', OSA_SERVICE_IDS)
+      .order('submitted_at', { ascending: false })
+
+    if (requestError) throw requestError
+
+    if (!requests || requests.length === 0) return
+
+    const requestIds = requests.map(request => request.id)
+
+    // Check existing OSA request notifications for this staff account
+    const { data: existingNotifications, error: existingError } =
+      await supabase
+        .from('notifications')
+        .select('id, related_id')
+        .eq('recipient_id', userId)
+        .eq('category', 'request')
+        .in('related_id', requestIds)
+
+    if (existingError) throw existingError
+
+    const existingRequestIds = new Set(
+      (existingNotifications || [])
+        .map(notification => notification.related_id)
+        .filter(Boolean)
+    )
+
+    // Only create notifications for requests without one
+    const missingNotifications = requests
+      .filter(request => !existingRequestIds.has(request.id))
+      .map(request => ({
+        recipient_id: userId,
+        title: 'New OSA Service Request',
+        message: `${request.request_type || request.title || 'A new service request'} has been submitted. ${request.details || ''}`.trim(),
+        category: 'request',
+        related_id: request.id,
+        is_read: false
+      }))
+
+    if (missingNotifications.length === 0) {
+      console.log('OSA request notifications are already up to date.')
+      return
+    }
+
+    const { data: insertedNotifications, error: insertError } =
+      await supabase
+        .from('notifications')
+        .insert(missingNotifications)
+        .select()
+
+    if (insertError) throw insertError
+
+    console.log(
+      'NEW OSA REQUEST NOTIFICATIONS CREATED:',
+      insertedNotifications
+    )
+
+  } catch (error) {
+    console.error('SYNC OSA REQUEST NOTIFICATIONS ERROR:', error)
+    throw error
+  } finally {
+    syncingRequests.value = false
+  }
+}
+
+// FETCH NOTIFICATIONS AND SYNC REQUESTS
 async function fetchNotifications() {
   loading.value = true
   errorMessage.value = ''
@@ -168,35 +300,36 @@ async function fetchNotifications() {
 
     currentUserId.value = user.id
 
-    const { data, error } = await supabase
-      .from('notifications')
-      .select(`
-        id,
-        recipient_id,
-        title,
-        message,
-        category,
-        related_id,
-        is_read,
-        created_at
-      `)
-      .eq('recipient_id', user.id)
-      .order('created_at', { ascending: false })
+    // Load existing notifications first
+    await loadNotificationRecords(user.id)
 
-    if (error) throw error
+    // Create only missing notifications for OSA requests
+    try {
+      await syncRequestNotifications(user.id)
 
-    notifications.value = data || []
+      // Reload to include newly created notifications
+      await loadNotificationRecords(user.id)
+
+    } catch (syncError) {
+      console.error('Unable to sync new OSA requests:', syncError)
+
+      errorMessage.value =
+        'Notifications loaded, but new OSA request notifications could not be created: ' +
+        syncError.message
+    }
 
   } catch (error) {
     console.error('FETCH NOTIFICATIONS ERROR:', error)
 
     errorMessage.value =
       error.message || 'Unable to load notifications.'
+
   } finally {
     loading.value = false
   }
 }
 
+// MARK ONE NOTIFICATION AS READ
 async function markAsRead(notification) {
   if (notification.is_read) return true
 
@@ -214,6 +347,7 @@ async function markAsRead(notification) {
     notification.is_read = true
 
     return true
+
   } catch (error) {
     console.error('MARK NOTIFICATION AS READ ERROR:', error)
 
@@ -224,6 +358,7 @@ async function markAsRead(notification) {
   }
 }
 
+// MARK ALL NOTIFICATIONS AS READ
 async function markAllAsRead() {
   if (!currentUserId.value || unreadCount.value === 0) return
 
@@ -249,11 +384,13 @@ async function markAllAsRead() {
 
     errorMessage.value =
       error.message || 'Unable to mark all notifications as read.'
+
   } finally {
     markingAll.value = false
   }
 }
 
+// DETERMINE TARGET PAGE
 function getTargetPage(category) {
   const value = String(category || '').toLowerCase()
 
@@ -275,6 +412,7 @@ function getTargetPage(category) {
   return 'Request'
 }
 
+// OPEN NOTIFICATION
 async function openNotification(notification) {
   openingId.value = notification.id
 
@@ -287,6 +425,7 @@ async function openNotification(notification) {
   openingId.value = null
 }
 
+// FORMAT DATE
 function formatDate(dateValue) {
   if (!dateValue) return 'Date unavailable'
 
@@ -305,6 +444,7 @@ function formatDate(dateValue) {
   })
 }
 
+// NOTIFICATION REALTIME
 function subscribeToNotifications() {
   if (!currentUserId.value) return
 
@@ -323,6 +463,7 @@ function subscribeToNotifications() {
         filter: `recipient_id=eq.${currentUserId.value}`
       },
       () => {
+        console.log('OSA notification database change detected.')
         fetchNotifications()
       }
     )
@@ -331,18 +472,56 @@ function subscribeToNotifications() {
     })
 }
 
+// SERVICE REQUEST REALTIME
+function subscribeToRequests() {
+  if (requestChannel) {
+    supabase.removeChannel(requestChannel)
+  }
+
+  requestChannel = supabase
+    .channel('osa-notification-service-requests')
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'service_requests'
+      },
+      async (payload) => {
+        const newRequest = payload.new
+
+        if (!OSA_SERVICE_IDS.includes(newRequest.service_id)) return
+
+        console.log('NEW OSA REQUEST DETECTED:', newRequest)
+
+        await fetchNotifications()
+      }
+    )
+    .subscribe((status) => {
+      console.log('OSA REQUEST NOTIFICATION REALTIME STATUS:', status)
+    })
+}
+
+// MOUNT
 onMounted(async () => {
   await fetchNotifications()
 
   if (currentUserId.value) {
     subscribeToNotifications()
+    subscribeToRequests()
   }
 })
 
+// UNMOUNT
 onBeforeUnmount(() => {
   if (notificationChannel) {
     supabase.removeChannel(notificationChannel)
     notificationChannel = null
+  }
+
+  if (requestChannel) {
+    supabase.removeChannel(requestChannel)
+    requestChannel = null
   }
 })
 </script>
@@ -568,6 +747,7 @@ onBeforeUnmount(() => {
   color: #8a2828;
   font-family: Arial, sans-serif;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .error-message button {

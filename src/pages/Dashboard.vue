@@ -6,8 +6,11 @@ import { supabase } from '../lib/Supabase.js'
 
 const emit = defineEmits(['navigate'])
 
-// OSA SERVICE ID
-const TARGET_SERVICE_ID = '5c2ab6fc-5f24-4573-896a-f5a11ad6625e'
+// OSA SERVICE IDS
+const OSA_SERVICE_IDS = [
+  '5c2ab6fc-5f24-4573-896a-f5a11ad6625e',
+  '65a94572-bce2-460f-b3e8-2ed568ee7bbf'
+]
 
 // DASHBOARD COUNTS
 const todayAppointments = ref(0)
@@ -17,11 +20,14 @@ const readyForPickup = ref(0)
 // APPOINTMENT RECORDS
 const appointments = ref([])
 
-const loading = ref(false)
+const loading = ref(true)
 const errorMessage = ref('')
 const currentDate = ref('')
 
 let dashboardSubscription = null
+let isFetching = false
+let refreshAgain = false
+let isMounted = false
 
 // DASHBOARD CARDS
 const stats = computed(() => [
@@ -144,7 +150,7 @@ async function fetchTodayAppointments() {
       status,
       purpose
     `)
-    .eq('service_id', TARGET_SERVICE_ID)
+    .in('service_id', OSA_SERVICE_IDS)
     .gte('scheduled_at', start)
     .lt('scheduled_at', end)
     .neq('status', 'cancelled')
@@ -200,12 +206,12 @@ async function fetchPendingRequests() {
   const { count, error } = await supabase
     .from('service_requests')
     .select('*', { count: 'exact', head: true })
-    .eq('service_id', TARGET_SERVICE_ID)
+    .in('service_id', OSA_SERVICE_IDS)
     .eq('status', 'pending')
 
   if (error) throw error
 
-  pendingRequests.value = count || 0
+  pendingRequests.value = count ?? 0
 }
 
 // FETCH READY FOR PICK UP
@@ -213,38 +219,51 @@ async function fetchReadyForPickup() {
   const { count, error } = await supabase
     .from('service_requests')
     .select('*', { count: 'exact', head: true })
-    .eq('service_id', TARGET_SERVICE_ID)
+    .in('service_id', OSA_SERVICE_IDS)
     .eq('status', 'ready_for_pickup')
 
   if (error) throw error
 
-  readyForPickup.value = count || 0
+  readyForPickup.value = count ?? 0
 }
 
 // FETCH ALL DASHBOARD DATA
 async function fetchDashboardData() {
-  loading.value = true
-  errorMessage.value = ''
-
-  try {
-    await Promise.all([
-      fetchTodayAppointments(),
-      fetchPendingRequests(),
-      fetchReadyForPickup()
-    ])
-
-    console.log('OSA DASHBOARD UPDATED:', {
-      todayAppointments: todayAppointments.value,
-      pendingRequests: pendingRequests.value,
-      readyForPickup: readyForPickup.value
-    })
-  } catch (error) {
-    console.error('OSA dashboard fetch error:', error)
-
-    errorMessage.value = error.message || 'Unable to load dashboard data.'
-  } finally {
-    loading.value = false
+  // If another fetch is ongoing, schedule another fetch afterward.
+  if (isFetching) {
+    refreshAgain = true
+    return
   }
+
+  isFetching = true
+
+  do {
+    refreshAgain = false
+
+    try {
+      await Promise.all([
+        fetchTodayAppointments(),
+        fetchPendingRequests(),
+        fetchReadyForPickup()
+      ])
+
+      errorMessage.value = ''
+
+      console.log('OSA DASHBOARD UPDATED:', {
+        todayAppointments: todayAppointments.value,
+        pendingRequests: pendingRequests.value,
+        readyForPickup: readyForPickup.value
+      })
+    } catch (error) {
+      console.error('OSA dashboard fetch error:', error)
+
+      errorMessage.value =
+        error.message || 'Unable to load dashboard data.'
+    }
+  } while (refreshAgain && isMounted)
+
+  isFetching = false
+  loading.value = false
 }
 
 // SUPABASE REALTIME
@@ -259,8 +278,8 @@ function subscribeToDashboardChanges() {
         schema: 'public',
         table: 'appointments'
       },
-      () => {
-        console.log('Appointment change detected.')
+      (payload) => {
+        console.log('OSA appointment change detected:', payload.eventType)
         fetchDashboardData()
       }
     )
@@ -272,26 +291,43 @@ function subscribeToDashboardChanges() {
         schema: 'public',
         table: 'service_requests'
       },
-      () => {
-        console.log('Service request change detected.')
+      (payload) => {
+        console.log('OSA service request change detected:', payload.eventType)
         fetchDashboardData()
       }
     )
 
-    .subscribe((status) => {
-      console.log('OSA dashboard realtime:', status)
+    .subscribe((status, error) => {
+      console.log('OSA dashboard realtime status:', status)
+
+      if (error) {
+        console.error('OSA dashboard realtime error:', error)
+      }
+
+      // Fetch the latest data once Realtime is connected.
+      if (status === 'SUBSCRIBED') {
+        fetchDashboardData()
+      }
     })
 }
 
 // INITIALIZATION
 onMounted(() => {
+  isMounted = true
+
   updateCurrentDate()
+
+  // Initial dashboard fetch
   fetchDashboardData()
+
+  // Listen for database changes
   subscribeToDashboardChanges()
 })
 
 // CLEANUP
 onUnmounted(() => {
+  isMounted = false
+
   if (dashboardSubscription) {
     supabase.removeChannel(dashboardSubscription)
     dashboardSubscription = null
