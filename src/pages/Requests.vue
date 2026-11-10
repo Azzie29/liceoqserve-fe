@@ -67,6 +67,19 @@ const selectedFilter = ref(
     : 'All'
 )
 
+// SUCCESS MODAL
+const showSuccessModal = ref(false)
+const successMessage = ref('Request status updated successfully.')
+
+function showSuccessPopup() {
+  successMessage.value = 'Request status updated successfully.'
+  showSuccessModal.value = true
+}
+
+function closeSuccessPopup() {
+  showSuccessModal.value = false
+}
+
 let requestSubscription = null
 
 const filteredRequests = computed(() => {
@@ -131,11 +144,10 @@ function mapRequest(row) {
   }
 }
 
+// FETCH REQUESTS
 async function fetchRequests() {
   loading.value = true
   errorMessage.value = ''
-
-  console.log('========== OSA REQUEST FETCH START ==========')
 
   try {
     const {
@@ -157,14 +169,10 @@ async function fetchRequests() {
 
     console.log('OSA RAW REQUEST DATA:', rawData)
     console.log('OSA RAW REQUEST COUNT:', rawData?.length)
-    console.log('OSA RAW REQUEST ERROR:', rawError)
 
     if (rawError) throw rawError
 
-    const {
-      data,
-      error
-    } = await supabase
+    const { data, error } = await supabase
       .from('service_requests')
       .select(`
         id,
@@ -198,15 +206,11 @@ async function fetchRequests() {
       .eq('service_id', TARGET_SERVICE_ID)
       .order('submitted_at', { ascending: false })
 
-    console.log('OSA JOINED REQUEST DATA:', data)
-    console.log('OSA JOINED REQUEST ERROR:', error)
-
     if (error) throw error
 
     requests.value = (data || []).map(mapRequest)
 
     console.log('OSA MAPPED REQUESTS:', requests.value)
-    console.log('OSA FINAL REQUEST COUNT:', requests.value.length)
 
     if (
       selectedRequestId.value &&
@@ -221,14 +225,13 @@ async function fetchRequests() {
     console.error('Unable to fetch OSA requests:', error)
 
     errorMessage.value = error.message || 'Unable to load requests.'
-
     requests.value = []
   } finally {
     loading.value = false
-    console.log('========== OSA REQUEST FETCH END ==========')
   }
 }
 
+// SELECT REQUEST
 function selectRequest(request) {
   selectedRequestId.value = request.id
   selectedTemplate.value = request.template || ''
@@ -243,6 +246,7 @@ function clearSelectedRequest() {
   expectedCompletion.value = ''
 }
 
+// DATE FORMATTING
 function formatDate(date) {
   if (!date) return 'Not set'
 
@@ -267,6 +271,7 @@ function formatSubmittedDate(date) {
   })
 }
 
+// FILTERS
 function selectFilter(filter) {
   selectedFilter.value = filter
 }
@@ -289,20 +294,14 @@ watch(selectedFilter, () => {
   }
 })
 
+// UPDATE REQUEST STATUS
 async function updateStatus(request, newStatus) {
-  if (!request || request.status === newStatus || updatingStatus.value) {
-    return
-  }
+  if (!request || updatingStatus.value) return
 
   const previousStatus = request.status
 
   updatingStatus.value = true
   errorMessage.value = ''
-
-  console.log('========== OSA STATUS UPDATE START ==========')
-  console.log('REQUEST ID:', request.id)
-  console.log('PREVIOUS STATUS:', previousStatus)
-  console.log('NEW STATUS:', newStatus)
 
   try {
     const {
@@ -330,14 +329,7 @@ async function updateStatus(request, newStatus) {
       .select('id, status')
       .maybeSingle()
 
-    console.log('OSA STATUS UPDATE RESULT:', {
-      data,
-      error,
-      code: error?.code,
-      message: error?.message,
-      details: error?.details,
-      hint: error?.hint
-    })
+    console.log('OSA STATUS UPDATE RESULT:', { data, error })
 
     if (error) throw error
 
@@ -349,7 +341,7 @@ async function updateStatus(request, newStatus) {
 
     await fetchRequests()
 
-    window.alert('Request status updated successfully.')
+    showSuccessPopup()
 
   } catch (error) {
     console.error('Unable to update request status:', error)
@@ -360,10 +352,10 @@ async function updateStatus(request, newStatus) {
     window.alert(error.message || 'Unable to update request status.')
   } finally {
     updatingStatus.value = false
-    console.log('========== OSA STATUS UPDATE END ==========')
   }
 }
 
+// SAVE DETAILS AND NOTIFY STUDENT
 async function saveAndNotify() {
   const request = selectedRequest.value
 
@@ -377,18 +369,11 @@ async function saveAndNotify() {
   saving.value = true
   errorMessage.value = ''
 
-  console.log('========== OSA SAVE AND NOTIFY START ==========')
-  console.log('SELECTED REQUEST:', request)
-  console.log('SELECTED REQUEST ID:', request.id)
-
   try {
     const {
       data: { user },
       error: userError
     } = await supabase.auth.getUser()
-
-    console.log('SAVE AUTH USER:', user?.id)
-    console.log('SAVE AUTH ERROR:', userError)
 
     if (userError) throw userError
 
@@ -411,24 +396,12 @@ async function saveAndNotify() {
       updated_at: new Date().toISOString()
     }
 
-    console.log('REQUEST UPDATE VALUES:', updateValues)
-    console.log('STEP 1: Updating service_requests...')
-
     const { data, error } = await supabase
       .from('service_requests')
       .update(updateValues)
       .eq('id', request.id)
       .select('id, student_id')
       .maybeSingle()
-
-    console.log('SAVE REQUEST UPDATE RESULT:', {
-      data,
-      error,
-      code: error?.code,
-      message: error?.message,
-      details: error?.details,
-      hint: error?.hint
-    })
 
     if (error) throw error
 
@@ -455,31 +428,14 @@ async function saveAndNotify() {
       is_read: false
     }
 
-    console.log('STEP 2: Inserting student notification...')
-    console.log('NOTIFICATION VALUES:', notificationValues)
-
     const {
-      data: notificationData,
       error: notificationError
     } = await supabase
       .from('notifications')
       .insert(notificationValues)
-      .select()
-
-    console.log('NOTIFICATION INSERT RESULT:', {
-      data: notificationData,
-      error: notificationError,
-      code: notificationError?.code,
-      message: notificationError?.message,
-      details: notificationError?.details,
-      hint: notificationError?.hint
-    })
 
     if (notificationError) {
-      console.error(
-        'Request saved, but notification failed:',
-        notificationError
-      )
+      console.error('Notification insert failed:', notificationError)
 
       await fetchRequests()
 
@@ -491,10 +447,7 @@ async function saveAndNotify() {
       return
     }
 
-    console.log('STEP 3: Updating instructions_sent_at...')
-
     const {
-      data: timestampData,
       error: timestampError
     } = await supabase
       .from('service_requests')
@@ -502,45 +455,25 @@ async function saveAndNotify() {
         instructions_sent_at: new Date().toISOString()
       })
       .eq('id', request.id)
-      .select('id, instructions_sent_at')
-      .maybeSingle()
-
-    console.log('TIMESTAMP UPDATE RESULT:', {
-      data: timestampData,
-      error: timestampError,
-      code: timestampError?.code,
-      message: timestampError?.message,
-      details: timestampError?.details,
-      hint: timestampError?.hint
-    })
 
     if (timestampError) {
-      console.error(
-        'Notification sent, but timestamp update failed:',
-        timestampError
-      )
+      console.error('Timestamp update failed:', timestampError)
     }
 
     await fetchRequests()
 
-    window.alert('Request details saved and student notified successfully.')
+    showSuccessPopup()
 
   } catch (error) {
-    console.error('========== SAVE AND NOTIFY ERROR ==========')
-    console.error('ERROR OBJECT:', error)
-    console.error('ERROR CODE:', error.code)
-    console.error('ERROR MESSAGE:', error.message)
-    console.error('ERROR DETAILS:', error.details)
-    console.error('ERROR HINT:', error.hint)
-    console.error('========== END ERROR ==========')
+    console.error('Unable to save request details:', error)
 
     window.alert(error.message || 'Unable to save request details.')
   } finally {
     saving.value = false
-    console.log('========== OSA SAVE AND NOTIFY END ==========')
   }
 }
 
+// REALTIME SUBSCRIPTION
 function subscribeToRequests() {
   requestSubscription = supabase
     .channel('osa-service-requests')
@@ -576,6 +509,7 @@ onUnmounted(() => {
 
 <template>
   <section class="request-page">
+
     <header class="request-heading">
       <h1>REQUEST MANAGEMENT</h1>
       <p>
@@ -583,6 +517,7 @@ onUnmounted(() => {
       </p>
     </header>
 
+    <!-- FILTER TOOLBAR -->
     <nav class="request-toolbar" aria-label="Request status filters">
       <button
         v-for="filter in filters"
@@ -620,7 +555,10 @@ onUnmounted(() => {
     </nav>
 
     <div class="request-workspace">
+
+      <!-- REQUEST LIST -->
       <div class="request-list">
+
         <div v-if="loading" class="request-empty">
           Loading requests...
         </div>
@@ -634,6 +572,7 @@ onUnmounted(() => {
         </div>
 
         <template v-else>
+
           <button
             v-for="request in filteredRequests"
             :key="request.id"
@@ -665,10 +604,16 @@ onUnmounted(() => {
           <div v-if="filteredRequests.length === 0" class="request-empty">
             No requests found for this status.
           </div>
+
         </template>
       </div>
 
-      <section v-if="selectedRequest" class="request-details">
+      <!-- REQUEST DETAILS -->
+      <section
+        v-if="selectedRequest"
+        class="request-details"
+      >
+
         <div class="details-topline">
           <span>REQUEST DETAILS</span>
 
@@ -681,9 +626,14 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <h2>{{ selectedRequest.service }}</h2>
+        <h2>{{ selectedRequest.student }}'s Request</h2>
+
+        <p class="request-service-name">
+          {{ selectedRequest.service }}
+        </p>
 
         <div class="request-meta">
+
           <div>
             <span>Student</span>
             <strong>{{ selectedRequest.student }}</strong>
@@ -717,9 +667,11 @@ onUnmounted(() => {
               {{ formatDate(selectedRequest.expectedCompletion) }}
             </strong>
           </div>
+
         </div>
 
         <div v-if="selectedRequest.title || selectedRequest.details">
+
           <div
             v-if="selectedRequest.title"
             class="request-field"
@@ -735,10 +687,14 @@ onUnmounted(() => {
             <label>Student description</label>
             <p>{{ selectedRequest.details }}</p>
           </div>
+
         </div>
 
+        <!-- EXPECTED COMPLETION -->
         <div class="request-field">
-          <label for="expected-completion">Expected completion date</label>
+          <label for="expected-completion">
+            Expected completion date
+          </label>
 
           <input
             id="expected-completion"
@@ -747,8 +703,11 @@ onUnmounted(() => {
           />
         </div>
 
+        <!-- INSTRUCTION TEMPLATE -->
         <div class="request-field">
-          <label for="instruction-template">Instruction template</label>
+          <label for="instruction-template">
+            Instruction template
+          </label>
 
           <select
             id="instruction-template"
@@ -764,8 +723,11 @@ onUnmounted(() => {
           </select>
         </div>
 
+        <!-- CUSTOM INSTRUCTIONS -->
         <div class="request-field">
-          <label for="custom-instructions">Custom instructions</label>
+          <label for="custom-instructions">
+            Custom instructions
+          </label>
 
           <textarea
             id="custom-instructions"
@@ -775,6 +737,7 @@ onUnmounted(() => {
           ></textarea>
         </div>
 
+        <!-- SAVE AND NOTIFY -->
         <button
           type="button"
           class="request-save"
@@ -784,7 +747,9 @@ onUnmounted(() => {
           {{ saving ? 'Saving...' : 'Save and notify student' }}
         </button>
 
+        <!-- STATUS BUTTONS -->
         <div class="request-status-actions">
+
           <button
             v-for="status in statusOptions"
             :key="status.value"
@@ -797,15 +762,204 @@ onUnmounted(() => {
           >
             {{ status.label }}
           </button>
+
         </div>
+
       </section>
 
+      <!-- EMPTY DETAILS -->
       <section
         v-else
         class="request-details details-placeholder"
       >
         Select a request to open its details
       </section>
+
     </div>
+
+    <!-- CUSTOM SUCCESS MODAL -->
+    <Teleport to="body">
+      <div
+        v-if="showSuccessModal"
+        class="request-success-overlay"
+        @click.self="closeSuccessPopup"
+      >
+
+        <div
+          class="request-success-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="request-success-title"
+        >
+
+          <div class="request-success-header">
+
+            <div class="request-success-icon">
+              ✔
+            </div>
+
+            <h2 id="request-success-title">
+              Success!
+            </h2>
+
+          </div>
+
+          <p class="request-success-message">
+            {{ successMessage }}
+          </p>
+
+          <div class="request-success-actions">
+
+            <button
+              type="button"
+              class="request-success-button"
+              @click="closeSuccessPopup"
+            >
+              OK
+            </button>
+
+          </div>
+
+        </div>
+      </div>
+    </Teleport>
+
   </section>
 </template>
+
+<style>
+/* =====================================
+   REQUEST SUCCESS MODAL - SMALLER SIZE
+===================================== */
+
+.request-success-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(35, 20, 20, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: requestOverlayFade 0.2s ease;
+}
+
+.request-success-modal {
+  width: 90%;
+  max-width: 420px;
+  background: #f9eeee;
+  border: 1px solid #e8dada;
+  border-radius: 18px;
+  padding: 24px 26px;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.2);
+  animation: requestModalAppear 0.25s ease;
+}
+
+.request-success-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.request-success-icon {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  border-radius: 12px;
+  background: #803b43;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Georgia, serif;
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.request-success-header h2 {
+  color: #400b10;
+  font-family: Georgia, serif;
+  font-size: 23px;
+  font-weight: bold;
+  margin: 0;
+}
+
+.request-success-message {
+  color: #806d6d;
+  font-family: Arial, sans-serif;
+  font-size: 15px;
+  margin: 24px 0;
+  line-height: 1.5;
+}
+
+.request-success-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.request-success-button {
+  background: #570b13;
+  color: white;
+  border: 1px solid #570b13;
+  border-radius: 9px;
+  padding: 11px 23px;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.request-success-button:hover {
+  background: #7a1722;
+  transform: translateY(-2px);
+}
+
+.request-success-button:active {
+  transform: scale(0.97);
+}
+
+@keyframes requestOverlayFade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes requestModalAppear {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 600px) {
+  .request-success-modal {
+    max-width: 340px;
+    padding: 20px;
+  }
+
+  .request-success-header h2 {
+    font-size: 21px;
+  }
+
+  .request-success-icon {
+    width: 46px;
+    height: 46px;
+    min-width: 46px;
+    font-size: 28px;
+  }
+
+  .request-success-message {
+    font-size: 14px;
+    margin: 20px 0;
+  }
+}
+</style>

@@ -11,7 +11,7 @@
 
     <div class="account-info">
       <div>
-        <strong>Mr. Jerome Aquino</strong>
+        <strong>Ms. Shania Twain Castro</strong>
         <span>Authorized Staff</span>
       </div>
     </div>
