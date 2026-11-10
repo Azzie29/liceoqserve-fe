@@ -1,4 +1,19 @@
 
+<script setup>
+import { computed } from 'vue'
+
+const props = defineProps({
+  profile: {
+    type: Object,
+    default: null
+  }
+})
+
+const staffName = computed(() => {
+  return props.profile?.full_name || 'Authorized Staff'
+})
+</script>
+
 <template>
   <header class="library-header">
     <div class="brand">
@@ -11,7 +26,7 @@
     </div>
 
     <div class="staff">
-      <span class="staff-name">Mr. Dhan Jee</span>
+      <span class="staff-name">{{ staffName }}</span>
       <span class="staff-role">Authorized Staff</span>
     </div>
   </header>
@@ -61,10 +76,13 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  text-align: right;
 }
 
 .staff-name {
   font-size: 21px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .staff-role {

@@ -15,17 +15,20 @@
 
       <div class="profile-information">
         <div>
-          <label>University email</label>
+          <label>University Email</label>
           <strong>library@liceo.edu.ph</strong>
         </div>
-        <div>
-          <label>Assigned Office</label>
-          <strong>Library</strong>
-        </div>
+
         <div>
           <label>Role</label>
           <strong>Authorized Staff</strong>
         </div>
+
+        <div>
+          <label>Assigned Office</label>
+          <strong>Library</strong>
+        </div>
+
         <div>
           <label>Account Status</label>
           <strong>Active</strong>
@@ -81,7 +84,12 @@
           <button class="primary-button" type="submit">
             Update password
           </button>
-          <button class="cancel-button" type="button" @click="cancelPassword">
+
+          <button
+            class="cancel-button"
+            type="button"
+            @click="cancelPassword"
+          >
             Cancel
           </button>
         </div>
@@ -129,7 +137,7 @@ function cancelPassword() {
 .profile-page {
   width: 100%;
   min-height: calc(100vh - 100px);
-  padding: 24px;
+  padding: 30px;
   box-sizing: border-box;
   background: #efdfdf;
   color: #350909;
@@ -137,11 +145,11 @@ function cancelPassword() {
 }
 
 .page-heading {
-  margin-bottom: 20px;
+  margin-bottom: 28px;
 }
 
 .page-heading h1 {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-family: Georgia, serif;
   font-size: 30px;
   font-weight: 500;
@@ -151,21 +159,24 @@ function cancelPassword() {
   margin: 0;
   color: #634646;
   font-size: 14px;
+  line-height: 1.6;
 }
 
-.profile-card,
-.password-card {
+/* Larger profile card */
+.profile-card {
   width: 100%;
-  max-width: 760px;
+  max-width: 1400px;
+  min-height: 440px;
   box-sizing: border-box;
   overflow: hidden;
   border-radius: 18px;
   background: #f8eeee;
+  box-shadow: 0 5px 18px rgba(53, 9, 9, 0.08);
 }
 
 .profile-banner {
-  min-height: 140px;
-  padding: 24px;
+  min-height: 210px;
+  padding: 36px 42px;
   box-sizing: border-box;
   background: #600b13;
   color: #fff5f5;
@@ -175,92 +186,116 @@ function cancelPassword() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
-  margin-bottom: 12px;
-  border-radius: 12px;
+  width: 68px;
+  height: 68px;
+  margin-bottom: 16px;
+  border-radius: 16px;
   background: #87343b;
   font-family: Georgia, serif;
-  font-size: 20px;
+  font-size: 25px;
   font-weight: bold;
 }
 
 .profile-banner h2 {
-  margin: 0 0 5px;
+  margin: 0 0 8px;
   font-family: Georgia, serif;
-  font-size: 22px;
+  font-size: 27px;
 }
 
 .profile-banner p {
   margin: 0;
   color: #e5c9c9;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
+/* Four information fields in one horizontal row */
 .profile-information {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  padding: 26px 30px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 32px;
+  padding: 48px 42px 38px;
 }
 
 .profile-information > div {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 12px;
+  min-width: 0;
+  min-height: 60px;
 }
 
 .profile-information label {
   color: #806868;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .profile-information strong {
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
 .change-button,
 .cancel-button {
   justify-self: start;
-  padding: 10px 14px;
+  align-self: start;
+  padding: 13px 20px;
   border: 1px solid #c9aaaa;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: #600b13;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
+  transition: background 0.2s ease;
 }
 
+.change-button {
+  grid-column: 1 / -1;
+}
+
+.change-button:hover,
+.cancel-button:hover {
+  background: #f0dddd;
+}
+
+/* Change password form */
 .password-card {
-  margin-top: 14px;
-  padding: 20px;
+  width: 100%;
+  max-width: 1400px;
+  margin-top: 20px;
+  padding: 28px;
+  box-sizing: border-box;
   border: 1px solid #d7bebe;
-  overflow: visible;
+  border-radius: 18px;
+  background: #f8eeee;
+  box-shadow: 0 5px 18px rgba(53, 9, 9, 0.06);
 }
 
 .password-card h3 {
-  margin: 0 0 14px;
-  font-size: 16px;
+  margin: 0 0 20px;
+  font-size: 19px;
 }
 
 .password-card form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .password-card label {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: bold;
 }
 
 .password-card input {
   width: 100%;
-  min-height: 38px;
-  padding: 10px 12px;
+  min-height: 44px;
+  margin-bottom: 8px;
+  padding: 12px 14px;
   border: 1px solid #d7bebe;
-  border-radius: 7px;
+  border-radius: 8px;
   background: #fff8f8;
   color: #350909;
   box-sizing: border-box;
@@ -269,48 +304,75 @@ function cancelPassword() {
 .form-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .primary-button {
-  padding: 10px 14px;
+  padding: 12px 18px;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   background: #600b13;
   color: white;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
-.form-message {
-  margin-top: 12px;
-  color: #600b13;
-  font-size: 12px;
+.primary-button:hover {
+  background: #7a1720;
 }
 
+.form-message {
+  margin: 12px 0;
+  color: #600b13;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Tablet layout */
+@media (max-width: 1000px) {
+  .profile-page {
+    padding: 24px;
+  }
+
+  .profile-information {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px;
+    padding: 32px;
+  }
+
+  .change-button {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Mobile layout */
 @media (max-width: 600px) {
   .profile-page {
     padding: 16px;
   }
 
-  .profile-card,
-  .password-card {
-    max-width: 100%;
-  }
-
-  .profile-information {
-    gap: 18px 12px;
-    padding: 18px;
-  }
-
-  .profile-banner {
-    padding: 20px;
+  .page-heading {
+    margin-bottom: 22px;
   }
 
   .page-heading h1 {
     font-size: 25px;
+  }
+
+  .profile-banner {
+    min-height: 170px;
+    padding: 24px;
+  }
+
+  .profile-information {
+    grid-template-columns: 1fr;
+    gap: 24px;
+    padding: 24px;
+  }
+
+  .password-card {
+    padding: 22px;
   }
 }
 </style>
