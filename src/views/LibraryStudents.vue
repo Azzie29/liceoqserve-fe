@@ -38,7 +38,7 @@
         <tbody>
           <tr
             v-for="student in filteredStudents"
-            :key="student.id"
+            :key="student.profileId"
           >
             <td class="student-name">{{ student.name }}</td>
             <td>{{ student.id }}</td>
@@ -60,7 +60,13 @@
             </td>
           </tr>
 
-          <tr v-if="filteredStudents.length === 0">
+          <tr v-if="loading">
+            <td colspan="6" class="no-results">
+              Loading student records...
+            </td>
+          </tr>
+
+          <tr v-else-if="filteredStudents.length === 0">
             <td colspan="6" class="no-results">
               No student records found.
             </td>
@@ -90,6 +96,7 @@
           </button>
         </div>
 
+        <!-- Personal Information -->
         <section class="detail-section">
           <h3>Personal Information</h3>
 
@@ -126,43 +133,88 @@
           </div>
         </section>
 
+        <!-- Current Active Transactions -->
         <section class="detail-section">
           <h3>Current Active Transactions</h3>
 
-          <div
-            v-for="(transaction, index) in selectedStudent.activeTransactions"
-            :key="index"
-            class="transaction-item"
-          >
-            {{ transaction }}
-          </div>
-
-          <p
-            v-if="selectedStudent.activeTransactions.length === 0"
-            class="empty-message"
-          >
-            No active transactions.
+          <p v-if="loadingTransactions" class="empty-message">
+            Loading transactions...
           </p>
+
+          <p v-else-if="transactionError" class="error-message">
+            {{ transactionError }}
+          </p>
+
+          <template v-else>
+            <div
+              v-for="transaction in selectedStudent.activeTransactions"
+              :key="transaction.id"
+              class="transaction-item"
+            >
+              <strong>{{ transaction.title }}</strong>
+
+              <span v-if="transaction.author">
+                Author: {{ transaction.author }}
+              </span>
+
+              <span>
+                Status: {{ formatStatus(transaction.status) }}
+              </span>
+
+              <span>
+                Borrowed: {{ transaction.borrowedDate }}
+              </span>
+
+              <span>
+                Due date: {{ transaction.dueDate }}
+              </span>
+            </div>
+
+            <p
+              v-if="selectedStudent.activeTransactions.length === 0"
+              class="empty-message"
+            >
+              No active transactions.
+            </p>
+          </template>
         </section>
 
+        <!-- Transaction History -->
         <section class="detail-section">
           <h3>Transaction History</h3>
 
-          <div
-            v-for="(transaction, index) in selectedStudent.history"
-            :key="index"
-            class="history-item"
-          >
-            <strong>{{ transaction.title }}</strong>
-            <span>{{ transaction.date }}</span>
-          </div>
-
-          <p
-            v-if="selectedStudent.history.length === 0"
-            class="empty-message"
-          >
-            No transaction history available.
+          <p v-if="loadingTransactions" class="empty-message">
+            Loading transaction history...
           </p>
+
+          <template v-else-if="!transactionError">
+            <div
+              v-for="transaction in selectedStudent.history"
+              :key="transaction.id"
+              class="history-item"
+            >
+              <strong>{{ transaction.title }}</strong>
+
+              <span v-if="transaction.author">
+                Author: {{ transaction.author }}
+              </span>
+
+              <span>
+                Status: {{ formatStatus(transaction.status) }}
+              </span>
+
+              <span>
+                Date: {{ transaction.date }}
+              </span>
+            </div>
+
+            <p
+              v-if="selectedStudent.history.length === 0"
+              class="empty-message"
+            >
+              No transaction history available.
+            </p>
+          </template>
         </section>
 
         <button
@@ -177,74 +229,132 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
 const searchQuery = ref('')
 const selectedStudent = ref(null)
+const students = ref([])
+const loading = ref(false)
+const loadingTransactions = ref(false)
+const transactionError = ref('')
 
-const students = ref([
-  {
-    name: 'Rainier Amparo',
-    id: '2024-1203',
-    course: 'BS Information Technology',
-    year: '3rd Year',
-    email: 'rainier.amparo@liceo.edu.ph',
-    contact: '+63 917 023 0504',
-    activeTransactions: [
-      'Library — Clearance — Pending',
-      'Library — Book Borrowing — Pending'
-    ],
-    history: [
-      {
-        title: 'Request Completed — Certification of Registration',
-        date: 'Sep. 10, 2026 · 2:40 PM'
-      },
-      {
-        title: 'Appointment Completed — Student Consultation',
-        date: 'Aug. 24, 2026 · 10:15 AM'
-      }
-    ]
-  },
-  {
-    name: 'Mary Jane Dee',
-    id: '2024-1320',
-    course: 'BS Business Administration',
-    year: '2nd Year',
-    email: 'mary.jane.dee@liceo.edu.ph',
-    contact: '+63 905 771 3499',
-    activeTransactions: [
-      'Library — Room Reservation — Pending'
-    ],
-    history: [
-      {
-        title: 'Appointment Completed — Library Visit',
-        date: 'Sep. 15, 2026 · 9:00 AM'
-      }
-    ]
-  },
-  {
-    name: 'Chloe Monteza',
-    id: '2024-2033',
-    course: 'BS Computer Science',
-    year: '4th Year',
-    email: 'chloe.monteza@liceo.edu.ph',
-    contact: '+63 991 620 8041',
-    activeTransactions: [
-      'Library — Clearance — Pending',
-      'Library — Clearance — Pending'
-    ],
-    history: [
-      {
-        title: 'Request Completed — Certification of Registration',
-        date: 'Sep. 10, 2026 · 2:40 PM'
-      },
-      {
-        title: 'Appointment Completed — Student Consultation',
-        date: 'Aug. 24, 2026 · 10:15 AM'
-      }
-    ]
+async function fetchStudents() {
+  loading.value = true
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        student_id,
+        full_name,
+        program,
+        year_level,
+        university_email,
+        is_active
+      `)
+      .eq('role', 'student')
+      .order('full_name', { ascending: true })
+
+    if (error) throw error
+
+    students.value = (data || []).map(profile => ({
+      profileId: profile.id,
+      name: profile.full_name || 'Not available',
+      id: profile.student_id || 'Not available',
+      course: profile.program || 'Not available',
+      year: profile.year_level || 'Not available',
+      email: profile.university_email || 'Not available',
+      contact: 'Not available',
+      activeTransactions: [],
+      history: []
+    }))
+  } catch (error) {
+    console.error('Error fetching library students:', error)
+    alert('Failed to load student records. Please check the console.')
+  } finally {
+    loading.value = false
   }
-])
+}
+
+// Fetch book transactions belonging to the selected student
+async function fetchStudentTransactions(student) {
+  loadingTransactions.value = true
+  transactionError.value = ''
+
+  try {
+    const { data, error } = await supabase
+      .from('book_loans')
+      .select(`
+        id,
+        book_id,
+        student_id,
+        borrowed_at,
+        due_at,
+        returned_at,
+        status,
+        created_at,
+        library_books (
+          title,
+          author,
+          category,
+          shelf_location
+        )
+      `)
+      .eq('student_id', student.profileId)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    const transactions = (data || []).map(loan => {
+      const book = Array.isArray(loan.library_books)
+        ? loan.library_books[0]
+        : loan.library_books
+
+      return {
+        id: loan.id,
+        title: book?.title || 'Unknown book',
+        author: book?.author || '',
+        category: book?.category || '',
+        shelfLocation: book?.shelf_location || '',
+        status: (loan.status || '').toLowerCase(),
+        borrowedDate: formatDate(loan.borrowed_at || loan.created_at),
+        dueDate: formatDate(loan.due_at),
+        date: formatDate(
+          loan.returned_at ||
+          loan.borrowed_at ||
+          loan.created_at
+        )
+      }
+    })
+
+    const activeStatuses = ['requested', 'borrowed']
+
+    const activeTransactions = transactions.filter(transaction =>
+      activeStatuses.includes(transaction.status)
+    )
+
+    const history = transactions.filter(transaction =>
+      !activeStatuses.includes(transaction.status)
+    )
+
+    // Update only the currently selected student
+    if (selectedStudent.value?.profileId === student.profileId) {
+      selectedStudent.value = {
+        ...selectedStudent.value,
+        activeTransactions,
+        history
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching student transactions:', error)
+    transactionError.value =
+      'Unable to load transactions. Please check the console.'
+  } finally {
+    loadingTransactions.value = false
+  }
+}
 
 const filteredStudents = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -260,14 +370,54 @@ const filteredStudents = computed(() => {
       student.email,
       student.contact
     ].some(value =>
-      value.toLowerCase().includes(query)
+      String(value).toLowerCase().includes(query)
     )
   )
 })
 
-function viewDetails(student) {
-  selectedStudent.value = student
+async function viewDetails(student) {
+  selectedStudent.value = {
+    ...student,
+    activeTransactions: [],
+    history: []
+  }
+
+  await fetchStudentTransactions(student)
 }
+
+function formatDate(value) {
+  if (!value) return 'Not available'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Not available'
+  }
+
+  return date.toLocaleString('en-PH', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+}
+
+function formatStatus(status) {
+  const labels = {
+    requested: 'Requested',
+    borrowed: 'Borrowed',
+    returned: 'Returned',
+    rejected: 'Rejected',
+    cancelled: 'Cancelled'
+  }
+
+  return labels[status] || status || 'Not available'
+}
+
+onMounted(() => {
+  fetchStudents()
+})
 </script>
 
 <style scoped>
@@ -497,12 +647,20 @@ td {
 }
 
 .transaction-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
   margin-bottom: 7px;
   padding: 11px 12px;
   border-radius: 6px;
   background: #ead5d6;
   color: #775759;
   font-size: 10px;
+}
+
+.transaction-item strong {
+  color: #451014;
+  font-size: 11px;
 }
 
 .history-item {
@@ -528,6 +686,11 @@ td {
 
 .empty-message {
   color: #987b7d;
+  font-size: 11px;
+}
+
+.error-message {
+  color: #b42318;
   font-size: 11px;
 }
 

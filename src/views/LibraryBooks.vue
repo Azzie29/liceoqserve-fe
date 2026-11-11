@@ -1,141 +1,512 @@
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
+
+const LIBRARY_SERVICE_ID = '99a740ad-96d7-43a5-9bcc-3f9723cabd28'
 
 const activeTab = ref('Borrow Requests')
 const searchBook = ref('')
 const selectedRequest = ref(null)
+const selectedLoan = ref(null)
 const confirmationAction = ref('')
 const showConfirmation = ref(false)
 
-const requests = ref([
-  {
-    id: 'LIB-016',
-    transactionId: '2024-122805',
-    title: 'Clean Code',
-    author: 'Robert C. Martin',
-    student: 'Angel Dadole',
-    requested: 'Requested just now',
-    purpose: '',
-    status: 'Pending',
-  },
-  {
-    id: 'LIB-016',
-    transactionId: '2024-122803',
-    title: 'Clean Code',
-    author: 'Robert C. Martin',
-    student: 'Rainier Amparo',
-    requested: 'Requested just now',
-    purpose: 'For database coursework.',
-    status: 'Pending',
-  },
-])
+const books = ref([])
+const requests = ref([])
+const borrowedBooks = ref([])
 
-const books = ref([
-  {
-    title: 'Introduction to Algorithms',
-    author: 'Cormen et al.',
-    accessionId: 'ACC-00182',
-    availability: 'Unavailable',
-  },
-  {
-    title: 'Database Systems',
-    author: 'Elmasri & Navathe',
-    accessionId: 'ACC-00183',
-    availability: 'Available',
-  },
-  {
-    title: 'Clean Code',
-    author: 'Robert C. Martin',
-    accessionId: 'ACC-00184',
-    availability: 'Available',
-  },
-  {
-    title: 'Computer Networks',
-    author: 'Andrew S. Tanenbaum',
-    accessionId: 'ACC-00185',
-    availability: 'Unavailable',
-  },
-])
+const loadingBooks = ref(false)
+const loadingRequests = ref(false)
+const loadingLoans = ref(false)
+const processing = ref(false)
 
-const borrowedBooks = ref([
-  {
-    title: 'Computer networks',
-    reference: 'LIB-018 · Book Borrowing',
-    expectedReturn: 'October 3, 2026',
-    status: 'Borrowed',
-  },
-  {
-    title: 'Database Systems',
-    reference: 'CLR-011 · Clearance Signing',
-    expectedReturn: 'October 6, 2026',
-    status: 'Borrowed',
-  },
-])
+const booksError = ref('')
+const requestsError = ref('')
+const loansError = ref('')
+const actionMessage = ref('')
+const actionError = ref('')
+
+let subscriptions = []
 
 const filteredBooks = computed(() => {
   const keyword = searchBook.value.trim().toLowerCase()
 
   if (!keyword) return books.value
 
-  return books.value.filter((book) =>
+  return books.value.filter(book =>
     [
       book.title,
       book.author,
-      book.accessionId,
-      book.availability,
-    ].some((value) => value.toLowerCase().includes(keyword)),
+      book.isbn,
+      book.category,
+      book.shelf_location,
+    ].some(value =>
+      String(value || '').toLowerCase().includes(keyword),
+    ),
   )
 })
 
+function getAvailability(book) {
+  return Number(book.available_copies) > 0
+    ? 'Available'
+    : 'Unavailable'
+}
+
+function formatDate(value) {
+  if (!value) return 'Not available'
+
+  return new Date(value).toLocaleString('en-PH', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function formatDateOnly(value) {
+  if (!value) return 'Not available'
+
+  return new Date(value).toLocaleDateString('en-PH', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+}
+
+function getStudentName(profile) {
+  return profile?.full_name || 'Unknown student'
+}
+
+async function fetchBooks() {
+  loadingBooks.value = true
+  booksError.value = ''
+
+  const { data, error } = await supabase
+    .from('library_books')
+    .select(`
+      id,
+      isbn,
+      title,
+      author,
+      category,
+      shelf_location,
+      total_copies,
+      available_copies,
+      is_active
+    `)
+    .eq('is_active', true)
+    .order('title', { ascending: true })
+
+  if (error) {
+    booksError.value = error.message
+    console.error('Error fetching books:', error)
+  } else {
+    books.value = data || []
+  }
+
+  loadingBooks.value = false
+}
+
+async function fetchRequests() {
+  loadingRequests.value = true
+  requestsError.value = ''
+
+  const { data, error } = await supabase
+    .from('service_requests')
+    .select(`
+      id,
+      student_id,
+      book_id,
+      title,
+      details,
+      request_type,
+      status,
+      staff_notes,
+      submitted_at
+    `)
+    .eq('service_id', LIBRARY_SERVICE_ID)
+    .order('submitted_at', { ascending: false })
+
+  if (error) {
+    requestsError.value = error.message
+    console.error('Error fetching borrow requests:', error)
+    loadingRequests.value = false
+    return
+  }
+
+  const rows = data || []
+
+  const studentIds = [
+    ...new Set(rows.map(item => item.student_id).filter(Boolean)),
+  ]
+
+  const bookIds = [
+    ...new Set(rows.map(item => item.book_id).filter(Boolean)),
+  ]
+
+  let profiles = []
+  let selectedBooks = []
+
+  if (studentIds.length) {
+    const result = await supabase
+      .from('profiles')
+      .select('id, student_id, full_name, university_email, program, year_level')
+      .in('id', studentIds)
+
+    if (result.error) {
+      requestsError.value = result.error.message
+      loadingRequests.value = false
+      return
+    }
+
+    profiles = result.data || []
+  }
+
+  if (bookIds.length) {
+    const result = await supabase
+      .from('library_books')
+      .select('id, title, author, isbn, category, available_copies')
+      .in('id', bookIds)
+
+    if (result.error) {
+      requestsError.value = result.error.message
+      loadingRequests.value = false
+      return
+    }
+
+    selectedBooks = result.data || []
+  }
+
+  requests.value = rows.map(request => ({
+    ...request,
+    student: profiles.find(
+      profile => profile.id === request.student_id,
+    ) || null,
+    book: selectedBooks.find(
+      book => book.id === request.book_id,
+    ) || null,
+  }))
+
+  loadingRequests.value = false
+}
+
+async function fetchBorrowedBooks() {
+  loadingLoans.value = true
+  loansError.value = ''
+
+  const { data, error } = await supabase
+    .from('book_loans')
+    .select(`
+      id,
+      book_id,
+      student_id,
+      borrowed_at,
+      due_at,
+      returned_at,
+      status,
+      source_request_id
+    `)
+    .order('borrowed_at', { ascending: false })
+
+  if (error) {
+    loansError.value = error.message
+    console.error('Error fetching book loans:', error)
+    loadingLoans.value = false
+    return
+  }
+
+  const rows = data || []
+
+  const studentIds = [
+    ...new Set(rows.map(item => item.student_id).filter(Boolean)),
+  ]
+
+  const bookIds = [
+    ...new Set(rows.map(item => item.book_id).filter(Boolean)),
+  ]
+
+  let profiles = []
+  let selectedBooks = []
+
+  if (studentIds.length) {
+    const result = await supabase
+      .from('profiles')
+      .select('id, student_id, full_name')
+      .in('id', studentIds)
+
+    if (result.error) {
+      loansError.value = result.error.message
+      loadingLoans.value = false
+      return
+    }
+
+    profiles = result.data || []
+  }
+
+  if (bookIds.length) {
+    const result = await supabase
+      .from('library_books')
+      .select('id, title, author')
+      .in('id', bookIds)
+
+    if (result.error) {
+      loansError.value = result.error.message
+      loadingLoans.value = false
+      return
+    }
+
+    selectedBooks = result.data || []
+  }
+
+  borrowedBooks.value = rows.map(loan => ({
+    ...loan,
+    student: profiles.find(
+      profile => profile.id === loan.student_id,
+    ) || null,
+    book: selectedBooks.find(
+      book => book.id === loan.book_id,
+    ) || null,
+  }))
+
+  loadingLoans.value = false
+}
+
+async function refreshAll() {
+  await Promise.all([
+    fetchBooks(),
+    fetchRequests(),
+    fetchBorrowedBooks(),
+  ])
+}
+
 function openConfirmation(request, action) {
   selectedRequest.value = request
+  selectedLoan.value = null
   confirmationAction.value = action
+  actionMessage.value = ''
+  actionError.value = ''
   showConfirmation.value = true
 }
 
-function confirmRequest() {
-  if (!selectedRequest.value) return
-
-  const request = selectedRequest.value
-
-  if (confirmationAction.value === 'Approve') {
-    request.status = 'Approved'
-
-    borrowedBooks.value.unshift({
-      title: request.title,
-      reference: `${request.id} · Book Borrowing`,
-      expectedReturn: 'To be confirmed',
-      status: 'Borrowed',
-    })
-  } else {
-    request.status = 'Rejected'
-  }
-
-  showConfirmation.value = false
+function openReturnConfirmation(loan) {
+  selectedLoan.value = loan
   selectedRequest.value = null
+  confirmationAction.value = 'Return'
+  actionMessage.value = ''
+  actionError.value = ''
+  showConfirmation.value = true
+}
+
+async function confirmRequest() {
+  if (processing.value) return
+
+  processing.value = true
+  actionError.value = ''
+  actionMessage.value = ''
+
+  try {
+    if (confirmationAction.value === 'Approve') {
+      if (!selectedRequest.value) return
+
+      if (!selectedRequest.value.book_id) {
+        throw new Error(
+          'This request has no selected book. The student must submit a request with a book selection.',
+        )
+      }
+
+      const { error } = await supabase.rpc(
+        'approve_library_borrow_request',
+        {
+          p_request_id: selectedRequest.value.id,
+        },
+      )
+
+      if (error) throw error
+
+      actionMessage.value = 'Borrow request approved successfully.'
+    }
+
+    if (confirmationAction.value === 'Reject') {
+      if (!selectedRequest.value) return
+
+      const { data: userData, error: userError } =
+        await supabase.auth.getUser()
+
+      if (userError) throw userError
+
+      const { data: updatedRequest, error } = await supabase
+        .from('service_requests')
+        .update({
+          status: 'rejected',
+          handled_by: userData.user.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', selectedRequest.value.id)
+        .eq('service_id', LIBRARY_SERVICE_ID)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle()
+
+      if (error) throw error
+
+      if (!updatedRequest) {
+        throw new Error(
+          'The request is no longer pending or you do not have permission to update it.',
+        )
+      }
+
+      actionMessage.value = 'Borrow request rejected successfully.'
+    }
+
+    if (confirmationAction.value === 'Return') {
+      if (!selectedLoan.value) return
+
+      const { error } = await supabase.rpc(
+        'return_library_book',
+        {
+          p_loan_id: selectedLoan.value.id,
+        },
+      )
+
+      if (error) throw error
+
+      actionMessage.value = 'Book returned successfully.'
+    }
+
+    showConfirmation.value = false
+    selectedRequest.value = null
+    selectedLoan.value = null
+
+    await refreshAll()
+  } catch (error) {
+    console.error('Library transaction error:', error)
+    actionError.value = error.message || 'Something went wrong.'
+  } finally {
+    processing.value = false
+  }
 }
 
 function closeConfirmation() {
+  if (processing.value) return
+
   showConfirmation.value = false
   selectedRequest.value = null
+  selectedLoan.value = null
+  actionError.value = ''
 }
 
-const confirmationTitle = computed(() =>
-  confirmationAction.value === 'Approve'
-    ? 'Approved borrow request?'
-    : 'Reject borrow request?',
-)
+const confirmationTitle = computed(() => {
+  if (confirmationAction.value === 'Approve') {
+    return 'Approve borrow request?'
+  }
+
+  if (confirmationAction.value === 'Reject') {
+    return 'Reject borrow request?'
+  }
+
+  return 'Confirm book return?'
+})
 
 const confirmationMessage = computed(() => {
-  if (!selectedRequest.value) return ''
+  if (confirmationAction.value === 'Return') {
+    return `Confirm that ${selectedLoan.value?.book?.title || 'this book'} has been returned by ${getStudentName(selectedLoan.value?.student)}?`
+  }
 
-  const status =
-    confirmationAction.value === 'Approve'
-      ? 'Approved'
-      : 'Rejected'
+  const request = selectedRequest.value
 
-  return `${selectedRequest.value.student} will immediately see ${status} ${selectedRequest.value.title}.`
+  if (!request) return ''
+
+  const bookTitle = request.book?.title || request.title || 'this book'
+  const studentName = getStudentName(request.student)
+
+  return confirmationAction.value === 'Approve'
+    ? `Approve ${studentName}'s request for ${bookTitle}? The book will be recorded as borrowed with a 5-day due date.`
+    : `Reject ${studentName}'s request for ${bookTitle}?`
+})
+
+const pendingRequests = computed(() =>
+  requests.value.filter(request => request.status === 'pending'),
+)
+
+const otherRequests = computed(() =>
+  requests.value.filter(request => request.status !== 'pending'),
+)
+
+const activeLoans = computed(() =>
+  borrowedBooks.value.filter(loan => loan.status === 'borrowed'),
+)
+
+const returnedLoans = computed(() =>
+  borrowedBooks.value.filter(loan => loan.status === 'returned'),
+)
+
+function statusLabel(status) {
+  const labels = {
+    pending: 'Pending',
+    processing: 'Processing',
+    ready_for_pickup: 'Ready for Pickup',
+    claimed: 'Approved / Issued',
+    completed: 'Completed',
+    rejected: 'Rejected',
+    cancelled: 'Cancelled',
+    borrowed: 'Borrowed',
+    returned: 'Returned',
+  }
+
+  return labels[status] || status
+}
+
+function statusClass(status) {
+  return String(status || '').toLowerCase().replaceAll('_', '-')
+}
+
+function subscribeToChanges() {
+  const channel = supabase
+    .channel('library-books-page-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'library_books' },
+      () => refreshAll(),
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'service_requests' },
+      payload => {
+        if (
+          payload.new?.service_id === LIBRARY_SERVICE_ID ||
+          payload.old?.service_id === LIBRARY_SERVICE_ID
+        ) {
+          fetchRequests()
+          fetchBorrowedBooks()
+        }
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'book_loans' },
+      () => {
+        fetchBorrowedBooks()
+        fetchBooks()
+      },
+    )
+    .subscribe()
+
+  subscriptions.push(channel)
+}
+
+onMounted(async () => {
+  await refreshAll()
+  subscribeToChanges()
+})
+
+onUnmounted(() => {
+  subscriptions.forEach(channel => {
+    supabase.removeChannel(channel)
+  })
+
+  subscriptions = []
 })
 </script>
 
@@ -148,11 +519,7 @@ const confirmationMessage = computed(() => {
 
     <nav class="book-tabs" aria-label="Book sections">
       <button
-        v-for="tab in [
-          'Borrow Requests',
-          'Catalog',
-          'Borrowed & Returns',
-        ]"
+        v-for="tab in ['Borrow Requests', 'Catalog', 'Borrowed & Returns']"
         :key="tab"
         type="button"
         class="tab-button"
@@ -163,51 +530,74 @@ const confirmationMessage = computed(() => {
       </button>
     </nav>
 
+    <p v-if="actionMessage" class="success-message">
+      {{ actionMessage }}
+    </p>
+
     <!-- BORROW REQUESTS -->
-    <section
-      v-if="activeTab === 'Borrow Requests'"
-      class="request-list"
-    >
+    <section v-if="activeTab === 'Borrow Requests'" class="request-list">
+      <div class="section-toolbar">
+        <span>Pending requests: {{ pendingRequests.length }}</span>
+        <button
+          type="button"
+          class="refresh-button"
+          :disabled="loadingRequests"
+          @click="fetchRequests"
+        >
+          {{ loadingRequests ? 'Refreshing...' : 'Refresh' }}
+        </button>
+      </div>
+
+      <p v-if="requestsError" class="error-message">
+        Unable to load requests: {{ requestsError }}
+      </p>
+
+      <p
+        v-if="loadingRequests && requests.length === 0"
+        class="empty-message"
+      >
+        Loading borrow requests...
+      </p>
+
       <article
-        v-for="request in requests"
-        :key="request.transactionId"
+        v-for="request in pendingRequests"
+        :key="request.id"
         class="request-row"
       >
         <div class="request-info">
           <p class="request-id">
-            {{ request.id }} · {{ request.transactionId }}
+            {{ request.student?.student_id || 'No student number' }}
+            · {{ request.id }}
           </p>
 
-          <h2>{{ request.title }}</h2>
+          <h2>{{ request.book?.title || request.title || 'Book not specified' }}</h2>
 
           <p class="request-meta">
-            {{ request.student }} · {{ request.requested }}
+            {{ getStudentName(request.student) }}
+            · {{ request.student?.program || 'No program' }}
+            · {{ formatDate(request.submitted_at) }}
           </p>
 
-          <p
-            v-if="request.purpose"
-            class="request-purpose"
-          >
+          <p v-if="request.book" class="request-book-info">
+            {{ request.book.author || 'Author not specified' }}
+            · {{ request.book.category || 'No category' }}
+          </p>
+
+          <p v-else class="request-book-info">
+            Selected book information is unavailable.
+          </p>
+
+          <p v-if="request.details" class="request-purpose">
             <strong>Student Notes / Purpose:</strong>
-            {{ request.purpose }}
+            {{ request.details }}
           </p>
-
-          <span
-            v-if="request.status !== 'Pending'"
-            class="request-status"
-            :class="request.status.toLowerCase()"
-          >
-            {{ request.status }}
-          </span>
         </div>
 
-        <div
-          v-if="request.status === 'Pending'"
-          class="request-actions"
-        >
+        <div class="request-actions">
           <button
             type="button"
             class="action-button approve-button"
+            :disabled="!request.book_id"
             @click="openConfirmation(request, 'Approve')"
           >
             Approve
@@ -224,40 +614,83 @@ const confirmationMessage = computed(() => {
       </article>
 
       <p
-        v-if="requests.length === 0"
+        v-if="!loadingRequests && !requestsError && pendingRequests.length === 0"
         class="empty-message"
       >
-        No borrow requests available.
+        No pending borrow requests.
       </p>
+
+      <div v-if="otherRequests.length" class="other-requests">
+        <h3>Request History</h3>
+
+        <article
+          v-for="request in otherRequests"
+          :key="request.id"
+          class="request-row history-row"
+        >
+          <div class="request-info">
+            <p class="request-id">
+              {{ request.student?.student_id || 'No student number' }}
+              · {{ request.id }}
+            </p>
+
+            <h2>{{ request.book?.title || request.title || 'Book not specified' }}</h2>
+
+            <p class="request-meta">
+              {{ getStudentName(request.student) }}
+              · {{ formatDate(request.submitted_at) }}
+            </p>
+          </div>
+
+          <span
+            class="request-status"
+            :class="statusClass(request.status)"
+          >
+            {{ statusLabel(request.status) }}
+          </span>
+        </article>
+      </div>
     </section>
 
     <!-- CATALOG -->
-    <section
-      v-else-if="activeTab === 'Catalog'"
-      class="catalog-section"
-    >
-      <label class="search-box">
-        <span class="visually-hidden">Search books</span>
+    <section v-else-if="activeTab === 'Catalog'" class="catalog-section">
+      <div class="catalog-toolbar">
+        <label class="search-box">
+          <span class="visually-hidden">Search books</span>
 
-        <input
-          v-model="searchBook"
-          type="search"
-          placeholder="Search book"
-        />
+          <input
+            v-model="searchBook"
+            type="search"
+            placeholder="Search book"
+          />
 
-        <svg
-          viewBox="0 0 24 24"
-          width="19"
-          height="19"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.7"
-          aria-hidden="true"
+          <svg
+            viewBox="0 0 24 24"
+            width="19"
+            height="19"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            aria-hidden="true"
+          >
+            <circle cx="10.8" cy="10.8" r="6.8" />
+            <path d="m16 16 4.2 4.2" />
+          </svg>
+        </label>
+
+        <button
+          type="button"
+          class="refresh-button"
+          :disabled="loadingBooks"
+          @click="fetchBooks"
         >
-          <circle cx="10.8" cy="10.8" r="6.8" />
-          <path d="m16 16 4.2 4.2" />
-        </svg>
-      </label>
+          {{ loadingBooks ? 'Refreshing...' : 'Refresh' }}
+        </button>
+      </div>
+
+      <p v-if="booksError" class="error-message">
+        Unable to load books: {{ booksError }}
+      </p>
 
       <div class="catalog-table-wrap">
         <table class="catalog-table">
@@ -265,32 +698,53 @@ const confirmationMessage = computed(() => {
             <tr>
               <th>Book</th>
               <th>Author</th>
-              <th>Accession ID</th>
+              <th>ISBN</th>
+              <th>Available Copies</th>
               <th>Availability</th>
             </tr>
           </thead>
 
           <tbody>
-            <tr
-              v-for="book in filteredBooks"
-              :key="book.accessionId"
-            >
-              <td>{{ book.title }}</td>
-              <td>{{ book.author }}</td>
-              <td>{{ book.accessionId }}</td>
+            <tr v-if="loadingBooks && books.length === 0">
+              <td colspan="5" class="no-results">Loading books...</td>
+            </tr>
+
+            <tr v-for="book in filteredBooks" :key="book.id">
+              <td>
+                <strong>{{ book.title }}</strong>
+                <small class="book-category">
+                  {{ book.category || 'No category' }}
+                  · {{ book.shelf_location || 'No shelf assigned' }}
+                </small>
+              </td>
+
+              <td>{{ book.author || 'Not specified' }}</td>
+              <td>{{ book.isbn || 'No ISBN' }}</td>
+              <td>{{ book.available_copies }} / {{ book.total_copies }}</td>
+
               <td>
                 <span
                   class="availability-badge"
-                  :class="book.availability.toLowerCase()"
+                  :class="getAvailability(book).toLowerCase()"
                 >
-                  {{ book.availability }}
+                  {{ getAvailability(book) }}
                 </span>
               </td>
             </tr>
 
-            <tr v-if="filteredBooks.length === 0">
-              <td colspan="4" class="no-results">
-                No books match your search.
+            <tr
+              v-if="
+                !loadingBooks &&
+                !booksError &&
+                filteredBooks.length === 0
+              "
+            >
+              <td colspan="5" class="no-results">
+                {{
+                  books.length === 0
+                    ? 'No books available in the catalog.'
+                    : 'No books match your search.'
+                }}
               </td>
             </tr>
           </tbody>
@@ -300,32 +754,100 @@ const confirmationMessage = computed(() => {
 
     <!-- BORROWED AND RETURNS -->
     <section v-else class="borrowed-list">
+      <div class="section-toolbar">
+        <span>Currently borrowed: {{ activeLoans.length }}</span>
+
+        <button
+          type="button"
+          class="refresh-button"
+          :disabled="loadingLoans"
+          @click="fetchBorrowedBooks"
+        >
+          {{ loadingLoans ? 'Refreshing...' : 'Refresh' }}
+        </button>
+      </div>
+
+      <p v-if="loansError" class="error-message">
+        Unable to load book loans: {{ loansError }}
+      </p>
+
+      <p
+        v-if="loadingLoans && borrowedBooks.length === 0"
+        class="empty-message"
+      >
+        Loading book transactions...
+      </p>
+
       <article
-        v-for="(book, index) in borrowedBooks"
-        :key="`${book.reference}-${index}`"
+        v-for="loan in activeLoans"
+        :key="loan.id"
         class="borrowed-row"
       >
-        <div>
-          <h2>{{ book.title }}</h2>
+        <div class="borrowed-info">
+          <h2>{{ loan.book?.title || 'Unknown book' }}</h2>
+
           <p class="borrowed-reference">
-            {{ book.reference }}
+            {{ loan.student?.full_name || 'Unknown student' }}
+            · {{ loan.student?.student_id || 'No student number' }}
           </p>
+
           <p class="return-date">
-            Expected: {{ book.expectedReturn }}
+            Borrowed: {{ formatDate(loan.borrowed_at) }}
+          </p>
+
+          <p class="return-date">
+            Due: {{ formatDate(loan.due_at) }}
           </p>
         </div>
 
-        <span class="availability-badge borrowed">
-          {{ book.status }}
-        </span>
+        <div class="loan-actions">
+          <span class="availability-badge borrowed">
+            Borrowed
+          </span>
+
+          <button
+            type="button"
+            class="action-button return-button"
+            @click="openReturnConfirmation(loan)"
+          >
+            Mark Returned
+          </button>
+        </div>
       </article>
 
       <p
-        v-if="borrowedBooks.length === 0"
+        v-if="!loadingLoans && !loansError && activeLoans.length === 0"
         class="empty-message"
       >
-        No borrowed books or returns to display.
+        No currently borrowed books.
       </p>
+
+      <div v-if="returnedLoans.length" class="returned-section">
+        <h3>Returned Books</h3>
+
+        <article
+          v-for="loan in returnedLoans"
+          :key="loan.id"
+          class="borrowed-row returned-row"
+        >
+          <div>
+            <h2>{{ loan.book?.title || 'Unknown book' }}</h2>
+
+            <p class="borrowed-reference">
+              {{ loan.student?.full_name || 'Unknown student' }}
+              · {{ loan.student?.student_id || 'No student number' }}
+            </p>
+
+            <p class="return-date">
+              Returned: {{ formatDate(loan.returned_at) }}
+            </p>
+          </div>
+
+          <span class="availability-badge available">
+            Returned
+          </span>
+        </article>
+      </div>
     </section>
 
     <!-- CONFIRMATION POPUP -->
@@ -343,7 +865,10 @@ const confirmationMessage = computed(() => {
       >
         <div
           class="warning-icon"
-          :class="{ danger: confirmationAction === 'Reject' }"
+          :class="{
+            danger: confirmationAction === 'Reject',
+            returned: confirmationAction === 'Return',
+          }"
         >
           !
         </div>
@@ -354,10 +879,15 @@ const confirmationMessage = computed(() => {
           {{ confirmationMessage }}
         </p>
 
+        <p v-if="actionError" class="error-message modal-error">
+          {{ actionError }}
+        </p>
+
         <div class="confirmation-actions">
           <button
             type="button"
             class="action-button go-back-button"
+            :disabled="processing"
             @click="closeConfirmation"
           >
             Go Back
@@ -367,11 +897,17 @@ const confirmationMessage = computed(() => {
             type="button"
             class="action-button confirm-button"
             :class="{
-              'confirm-reject': confirmationAction === 'Reject'
+              'confirm-reject': confirmationAction === 'Reject',
+              'confirm-return': confirmationAction === 'Return',
             }"
+            :disabled="processing"
             @click="confirmRequest"
           >
-            {{ confirmationAction }}
+            {{
+              processing
+                ? 'Processing...'
+                : confirmationAction
+            }}
           </button>
         </div>
       </section>
@@ -439,6 +975,18 @@ const confirmationMessage = computed(() => {
   background: #f8eeee;
 }
 
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 15px;
+  border-bottom: 1px solid #e6d2d2;
+  color: #554041;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .request-row,
 .borrowed-row {
   display: flex;
@@ -454,7 +1002,8 @@ const confirmationMessage = computed(() => {
   border-bottom: none;
 }
 
-.request-info {
+.request-info,
+.borrowed-info {
   min-width: 0;
   flex: 1;
 }
@@ -463,6 +1012,7 @@ const confirmationMessage = computed(() => {
   margin: 0 0 4px;
   color: #70595a;
   font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .request-info h2,
@@ -475,10 +1025,12 @@ const confirmationMessage = computed(() => {
 
 .request-meta,
 .borrowed-reference,
-.return-date {
+.return-date,
+.request-book-info {
   margin: 0;
   color: #554041;
   font-size: 10px;
+  line-height: 1.6;
 }
 
 .request-purpose {
@@ -489,11 +1041,15 @@ const confirmationMessage = computed(() => {
   background: #e7d0d1;
   color: #44282a;
   font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.request-actions {
+.request-actions,
+.loan-actions {
   display: flex;
   flex-shrink: 0;
+  align-items: center;
   gap: 6px;
 }
 
@@ -504,6 +1060,11 @@ const confirmationMessage = computed(() => {
   border-radius: 6px;
   font-size: 11px;
   cursor: pointer;
+}
+
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .approve-button,
@@ -528,19 +1089,60 @@ const confirmationMessage = computed(() => {
   background: #ead6d7;
 }
 
+.return-button {
+  border-color: #28744b;
+  background: #28744b;
+  color: white;
+}
+
+.return-button:hover {
+  background: #1e5d3b;
+}
+
 .request-status {
   display: inline-block;
-  margin-top: 7px;
+  flex-shrink: 0;
   font-size: 10px;
   font-weight: 700;
 }
 
-.request-status.approved {
+.request-status.claimed,
+.request-status.completed {
   color: #28744b;
 }
 
-.request-status.rejected {
+.request-status.rejected,
+.request-status.cancelled {
   color: #c60000;
+}
+
+.request-status.pending {
+  color: #9a6a13;
+}
+
+.request-status.processing,
+.request-status.ready-for-pickup {
+  color: #70551a;
+}
+
+.other-requests,
+.returned-section {
+  border-top: 1px solid #e6d2d2;
+}
+
+.other-requests h3,
+.returned-section h3 {
+  margin: 0;
+  padding: 14px 17px 8px;
+  color: #542d30;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.history-row {
+  padding-top: 11px;
+  padding-bottom: 11px;
 }
 
 .catalog-section {
@@ -549,8 +1151,15 @@ const confirmationMessage = computed(() => {
   gap: 15px;
 }
 
+.catalog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
 .search-box {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 8px;
   min-height: 36px;
@@ -573,6 +1182,47 @@ const confirmationMessage = computed(() => {
 
 .search-box input::placeholder {
   color: #927879;
+}
+
+.refresh-button {
+  min-height: 36px;
+  padding: 0 15px;
+  border: 1px solid #570910;
+  border-radius: 7px;
+  background: #570910;
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.refresh-button:hover {
+  background: #74121b;
+}
+
+.refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin: 10px 14px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: #f4dada;
+  color: #a00000;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.success-message {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #a7d1b4;
+  border-radius: 7px;
+  background: #e1f2e5;
+  color: #245c3b;
+  font-size: 11px;
 }
 
 .catalog-table {
@@ -599,6 +1249,13 @@ const confirmationMessage = computed(() => {
 
 .catalog-table tbody tr:hover {
   background: #f4e6e6;
+}
+
+.book-category {
+  display: block;
+  margin-top: 4px;
+  color: #795f60;
+  font-size: 9px;
 }
 
 .availability-badge {
@@ -638,6 +1295,10 @@ const confirmationMessage = computed(() => {
 
 .return-date {
   font-size: 10px;
+}
+
+.returned-row {
+  background: #fbf3f3;
 }
 
 .empty-message,
@@ -691,6 +1352,11 @@ const confirmationMessage = computed(() => {
   color: #c90000;
 }
 
+.warning-icon.returned {
+  background: #b9dfc7;
+  color: #245c3b;
+}
+
 .confirmation-modal h2 {
   margin: 0;
   font-family: Georgia, 'Times New Roman', serif;
@@ -704,6 +1370,11 @@ const confirmationMessage = computed(() => {
   color: #553638;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.modal-error {
+  grid-column: 1 / -1;
+  margin: 0 0 15px;
 }
 
 .confirmation-actions {
@@ -722,6 +1393,11 @@ const confirmationMessage = computed(() => {
   background: #c90000;
 }
 
+.confirm-button.confirm-return {
+  border-color: #28744b;
+  background: #28744b;
+}
+
 .visually-hidden {
   position: absolute;
   overflow: hidden;
@@ -736,13 +1412,15 @@ const confirmationMessage = computed(() => {
     padding: 18px 13px 30px;
   }
 
-  .request-row {
+  .request-row,
+  .borrowed-row {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
   }
 
-  .request-actions {
+  .request-actions,
+  .loan-actions {
     align-self: flex-end;
   }
 
@@ -751,7 +1429,7 @@ const confirmationMessage = computed(() => {
   }
 
   .catalog-table {
-    min-width: 540px;
+    min-width: 700px;
   }
 }
 
@@ -759,6 +1437,11 @@ const confirmationMessage = computed(() => {
   .tab-button {
     padding: 0 12px;
     font-size: 11px;
+  }
+
+  .catalog-toolbar {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .confirmation-modal {

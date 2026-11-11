@@ -9,11 +9,33 @@
     <div class="schedule-grid">
       <!-- OFFICE HOURS -->
       <section class="schedule-card">
-        <h2>Office Hours</h2>
+        <div class="card-heading">
+          <h2>Office Hours</h2>
+          <button class="refresh-button" @click="fetchOfficeHours" :disabled="loadingHours">
+            {{ loadingHours ? 'Loading...' : 'Refresh' }}
+          </button>
+        </div>
 
-        <div v-for="day in officeHours" :key="day.day" class="office-row">
-          <span>{{ day.day }}</span>
-          <strong>{{ day.hours }}</strong>
+        <div v-if="loadingHours" class="empty-state">
+          Loading office hours...
+        </div>
+
+        <div v-else-if="officeHours.length === 0" class="empty-state">
+          No office hours found.
+        </div>
+
+        <div
+          v-for="day in officeHours"
+          :key="day.day_of_week"
+          class="office-row"
+        >
+          <span>{{ dayNames[day.day_of_week] }}</span>
+          <strong>
+            {{ day.is_closed
+              ? 'Closed'
+              : `${formatTime(day.opening_time)} - ${formatTime(day.closing_time)}`
+            }}
+          </strong>
         </div>
       </section>
 
@@ -47,10 +69,14 @@
             placeholder="Reason (optional)"
           />
 
-          <button type="submit">BLOCK DATE AND TIME</button>
+          <button type="submit" :disabled="saving">
+            {{ saving ? 'SAVING...' : 'BLOCK DATE AND TIME' }}
+          </button>
         </form>
 
-        <p v-if="message" class="message">{{ message }}</p>
+        <p v-if="message" class="message" :class="{ error: isError }">
+          {{ message }}
+        </p>
       </section>
     </div>
 
@@ -58,10 +84,24 @@
     <section class="schedule-card blocked-card">
       <div class="blocked-heading">
         <h2>Blocked Dates and Times</h2>
-        <span>{{ blockedSchedules.length }} blocked</span>
+
+        <div class="blocked-actions">
+          <span>{{ blockedSchedules.length }} blocked</span>
+          <button
+            class="refresh-button"
+            @click="fetchBlockedSchedules"
+            :disabled="loadingBlocks"
+          >
+            {{ loadingBlocks ? 'Loading...' : 'Refresh' }}
+          </button>
+        </div>
       </div>
 
-      <div v-if="blockedSchedules.length === 0" class="empty-state">
+      <div v-if="loadingBlocks" class="empty-state">
+        Loading blocked schedules...
+      </div>
+
+      <div v-else-if="blockedSchedules.length === 0" class="empty-state">
         No blocked dates or times yet.
       </div>
 
@@ -71,13 +111,17 @@
         class="blocked-row"
       >
         <div class="blocked-info">
-          <strong>{{ formatDate(item.date) }}</strong>
-          <span>{{ item.time }}</span>
+          <strong>{{ formatDate(item.blocked_date) }}</strong>
+          <span>{{ item.time_slot }}</span>
           <small v-if="item.reason">{{ item.reason }}</small>
         </div>
 
-        <button class="remove-button" @click="removeBlock(item.id)">
-          Remove
+        <button
+          class="remove-button"
+          @click="removeBlock(item.id)"
+          :disabled="deletingId === item.id"
+        >
+          {{ deletingId === item.id ? 'Removing...' : 'Remove' }}
         </button>
       </div>
     </section>
@@ -85,14 +129,19 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
-const officeHours = [
-  { day: 'Monday', hours: '9:00 AM - 5:00 PM' },
-  { day: 'Tuesday', hours: '9:00 AM - 5:00 PM' },
-  { day: 'Wednesday', hours: '9:00 AM - 5:00 PM' },
-  { day: 'Thursday', hours: '9:00 AM - 5:00 PM' },
-  { day: 'Friday', hours: '9:00 AM - 5:00 PM' }
+const LIBRARY_DEPARTMENT = 'library'
+
+const dayNames = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday'
 ]
 
 const timeOptions = [
@@ -106,56 +155,180 @@ const timeOptions = [
   '4:00 PM - 5:00 PM'
 ]
 
-const today = new Date().toLocaleDateString('en-CA')
+const today = getLocalDate()
+
+const officeHours = ref([])
+const blockedSchedules = ref([])
+
 const blockDate = ref('')
 const blockTime = ref('')
 const blockReason = ref('')
+
 const message = ref('')
-const blockedSchedules = ref([])
-let nextId = 1
+const isError = ref(false)
 
-function blockSchedule() {
-  const exists = blockedSchedules.value.some(
-    item => item.date === blockDate.value &&
-      item.time === blockTime.value
-  )
+const loadingHours = ref(false)
+const loadingBlocks = ref(false)
+const saving = ref(false)
+const deletingId = ref(null)
 
-  if (exists) {
-    message.value = 'This date and time is already blocked.'
-    return
-  }
+function getLocalDate() {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
 
-  blockedSchedules.value.push({
-    id: nextId++,
-    date: blockDate.value,
-    time: blockTime.value,
-    reason: blockReason.value.trim()
-  })
-
-  blockedSchedules.value.sort((a, b) =>
-    a.date.localeCompare(b.date)
-  )
-
-  message.value = 'Date and time blocked successfully!'
-  blockDate.value = ''
-  blockTime.value = ''
-  blockReason.value = ''
+  return `${year}-${month}-${day}`
 }
 
-function removeBlock(id) {
-  blockedSchedules.value = blockedSchedules.value.filter(
-    item => item.id !== id
-  )
-  message.value = 'Blocked schedule removed.'
+function formatTime(time) {
+  if (!time) return ''
+
+  const [hours, minutes] = time.split(':')
+  const date = new Date()
+  date.setHours(Number(hours), Number(minutes), 0)
+
+  return date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  })
 }
 
 function formatDate(date) {
-  return new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
+  if (!date) return ''
+
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-US', {
     month: 'long',
     day: 'numeric',
     year: 'numeric'
   })
 }
+
+function showMessage(text, error = false) {
+  message.value = text
+  isError.value = error
+}
+
+async function fetchOfficeHours() {
+  loadingHours.value = true
+
+  const { data, error } = await supabase
+    .from('office_hours')
+    .select('*')
+    .eq('department', LIBRARY_DEPARTMENT)
+    .order('day_of_week', { ascending: true })
+
+  loadingHours.value = false
+
+  if (error) {
+    console.error('Office hours error:', error)
+    showMessage('Unable to load office hours: ' + error.message, true)
+    return
+  }
+
+  officeHours.value = data || []
+}
+
+async function fetchBlockedSchedules() {
+  loadingBlocks.value = true
+
+  const { data, error } = await supabase
+    .from('blocked_schedules')
+    .select('*')
+    .eq('department', LIBRARY_DEPARTMENT)
+    .order('blocked_date', { ascending: true })
+
+  loadingBlocks.value = false
+
+  if (error) {
+    console.error('Blocked schedules error:', error)
+    showMessage('Unable to load blocked schedules: ' + error.message, true)
+    return
+  }
+
+  blockedSchedules.value = data || []
+}
+
+async function blockSchedule() {
+  if (!blockDate.value || !blockTime.value) {
+    showMessage('Please select a date and time.', true)
+    return
+  }
+
+  saving.value = true
+  message.value = ''
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    saving.value = false
+    showMessage('Please log in again before adding a blocked schedule.', true)
+    return
+  }
+
+  const { error } = await supabase
+    .from('blocked_schedules')
+    .insert({
+      department: LIBRARY_DEPARTMENT,
+      blocked_date: blockDate.value,
+      time_slot: blockTime.value,
+      reason: blockReason.value.trim() || null,
+      created_by: user.id
+    })
+
+  saving.value = false
+
+  if (error) {
+    console.error('Add blocked schedule error:', error)
+
+    if (error.code === '23505') {
+      showMessage('This date and time is already blocked.', true)
+    } else {
+      showMessage('Unable to block schedule: ' + error.message, true)
+    }
+
+    return
+  }
+
+  showMessage('Date and time blocked successfully!')
+
+  blockDate.value = ''
+  blockTime.value = ''
+  blockReason.value = ''
+
+  await fetchBlockedSchedules()
+}
+
+async function removeBlock(id) {
+  if (!confirm('Are you sure you want to remove this blocked schedule?')) {
+    return
+  }
+
+  deletingId.value = id
+
+  const { error } = await supabase
+    .from('blocked_schedules')
+    .delete()
+    .eq('id', id)
+    .eq('department', LIBRARY_DEPARTMENT)
+
+  deletingId.value = null
+
+  if (error) {
+    console.error('Remove blocked schedule error:', error)
+    showMessage('Unable to remove blocked schedule: ' + error.message, true)
+    return
+  }
+
+  showMessage('Blocked schedule removed successfully!')
+  await fetchBlockedSchedules()
+}
+
+onMounted(() => {
+  fetchOfficeHours()
+  fetchBlockedSchedules()
+})
 </script>
 
 <style scoped>
@@ -206,6 +379,32 @@ function formatDate(date) {
   font-family: Georgia, serif;
   font-size: 20px;
   font-weight: 500;
+}
+
+.card-heading,
+.blocked-heading,
+.blocked-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.refresh-button {
+  padding: 7px 11px;
+  border: 1px solid #600b13;
+  border-radius: 6px;
+  background: transparent;
+  color: #600b13;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.refresh-button:disabled,
+.remove-button:disabled,
+.schedule-card form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .office-row {
@@ -261,21 +460,23 @@ function formatDate(date) {
 .message {
   margin: 12px 0 0;
   font-size: 12px;
-  color: #600b13;
+  color: #27632a;
+}
+
+.message.error {
+  color: #b00020;
 }
 
 .blocked-card {
   margin-top: 20px;
 }
 
-.blocked-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.blocked-heading h2 {
+  margin-bottom: 18px;
 }
 
-.blocked-heading span {
+.blocked-heading > span,
+.blocked-actions > span {
   padding: 6px 10px;
   border-radius: 20px;
   background: #ead2d2;
@@ -330,6 +531,10 @@ function formatDate(date) {
 
   .office-row {
     font-size: 12px;
+  }
+
+  .blocked-heading {
+    align-items: flex-start;
   }
 }
 </style>

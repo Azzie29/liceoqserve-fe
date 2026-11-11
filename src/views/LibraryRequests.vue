@@ -1,10 +1,21 @@
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
 import RequestCard from '../components/RequestCard.vue'
 import RequestDetails from '../components/RequestDetails.vue'
 import StatusConfirmModal from '../components/StatusConfirmModal.vue'
+
+// LIBRARY OFFICE SERVICE IDs
+const LIBRARY_SERVICE_IDS = [
+  '987d7769-8a02-44a1-9b95-cdfec559a70e',
+  'faa4239d-cae7-4fe7-af69-3f25bec2fe44',
+  '99a740ad-96d7-43a5-9bcc-3f9723cabd28',
+  '11153e05-a183-48cd-83b0-12e46d921915',
+  'be4db8a9-3ac2-41ae-ba72-5e96a3034512',
+  '2e171fa5-701e-4e91-9d3a-a99214dfce59',
+]
 
 const filters = [
   'All',
@@ -15,76 +26,131 @@ const filters = [
 ]
 
 const activeFilter = ref('All')
-const selectedRequestId = ref(1)
+const selectedRequestId = ref(null)
 const showStatusModal = ref(false)
 const pendingStatus = ref('Pending')
 const searchQuery = ref('')
 const notice = ref('')
+const requests = ref([])
+const loading = ref(false)
+const saving = ref(false)
+const errorMessage = ref('')
 
-const requests = ref([
-  {
-    id: 1,
-    requestNumber: 'REQ-2026-001',
-    studentName: 'Maria Santos',
-    studentId: '2024-00125',
-    type: 'Certificate of Enrollment',
-    requestDate: '2026-10-20',
-    expectedDate: '2026-10-28',
-    status: 'Pending',
-    instruction: 'Please bring your school ID when claiming.',
-  },
-  {
-    id: 2,
-    requestNumber: 'REQ-2026-002',
-    studentName: 'Juan Dela Cruz',
-    studentId: '2023-00418',
-    type: 'Good Moral Certificate',
-    requestDate: '2026-10-21',
-    expectedDate: '2026-10-29',
-    status: 'Processing',
-    instruction: 'Please wait for the office confirmation.',
-  },
-  {
-    id: 3,
-    requestNumber: 'REQ-2026-003',
-    studentName: 'Ana Reyes',
-    studentId: '2024-00076',
-    type: 'Library Clearance',
-    requestDate: '2026-10-22',
-    expectedDate: '2026-10-25',
-    status: 'Completed',
-    instruction: 'Ready for claiming at the library office.',
-  },
-  {
-    id: 4,
-    requestNumber: 'REQ-2026-004',
-    studentName: 'Mark Garcia',
-    studentId: '2022-00332',
-    type: 'Transcript Request',
-    requestDate: '2026-10-23',
-    expectedDate: '',
-    status: 'Cancelled',
-    instruction: 'Request cancelled by the student.',
-  },
-  {
-    id: 5,
-    requestNumber: 'REQ-2026-005',
-    studentName: 'Sofia Lim',
-    studentId: '2025-00108',
-    type: 'Certificate of Registration',
-    requestDate: '2026-10-24',
-    expectedDate: '2026-10-30',
-    status: 'Pending',
-    instruction: '',
-  },
-])
+let requestSubscription = null
 
+// DATABASE STATUS TO DISPLAY STATUS
+function formatStatus(status) {
+  const normalized = String(status || '').toLowerCase()
+
+  if (normalized === 'pending') return 'Pending'
+  if (normalized === 'processing') return 'Processing'
+  if (normalized === 'completed') return 'Completed'
+  if (normalized === 'cancelled') return 'Cancelled'
+
+  if (
+    normalized === 'ready_for_pickup' ||
+    normalized === 'claimed'
+  ) {
+    return 'Processing'
+  }
+
+  if (normalized === 'rejected') return 'Cancelled'
+
+  return 'Pending'
+}
+
+// FETCH REQUESTS FROM SUPABASE
+async function fetchRequests() {
+  loading.value = true
+  errorMessage.value = ''
+
+  try {
+    const { data: requestData, error: requestError } = await supabase
+      .from('service_requests')
+      .select('*')
+      .in('service_id', LIBRARY_SERVICE_IDS)
+      .order('submitted_at', { ascending: false })
+
+    if (requestError) throw requestError
+
+    const studentIds = [
+      ...new Set(
+        (requestData || [])
+          .map((request) => request.student_id)
+          .filter(Boolean),
+      ),
+    ]
+
+    let profilesMap = {}
+
+    if (studentIds.length > 0) {
+      const { data: profiles, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, full_name, student_id')
+        .in('id', studentIds)
+
+      if (profileError) throw profileError
+
+      profilesMap = Object.fromEntries(
+        (profiles || []).map((profile) => [
+          profile.id,
+          profile,
+        ]),
+      )
+    }
+
+    requests.value = (requestData || []).map((request) => {
+      const student = profilesMap[request.student_id]
+
+      return {
+        id: request.id,
+        requestNumber: `REQ-${request.id.slice(0, 8).toUpperCase()}`,
+        studentName: student?.full_name || 'Unknown Student',
+        studentId: student?.student_id || 'Not available',
+        type:
+          request.request_type ||
+          request.title ||
+          'Library Request',
+        requestDate: request.submitted_at
+          ? request.submitted_at.slice(0, 10)
+          : '',
+        expectedDate: request.expected_completion || '',
+        status: formatStatus(request.status),
+        instruction:
+          request.instructions ||
+          request.staff_notes ||
+          '',
+        details: request.details || '',
+        studentUuid: request.student_id,
+        serviceId: request.service_id,
+        databaseStatus: request.status,
+      }
+    })
+
+    const selectedStillExists = requests.value.some(
+      (request) => request.id === selectedRequestId.value,
+    )
+
+    if (!selectedStillExists) {
+      selectedRequestId.value = requests.value[0]?.id || null
+    }
+  } catch (error) {
+    console.error('Error fetching Library requests:', error)
+    errorMessage.value =
+      error.message || 'Unable to load requests from Supabase.'
+  } finally {
+    loading.value = false
+  }
+}
+
+// SELECTED REQUEST
 const selectedRequest = computed(() =>
   requests.value.find(
     (request) => request.id === selectedRequestId.value,
   ) || null,
 )
 
+// FILTER AND SEARCH
 const filteredRequests = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
 
@@ -95,31 +161,72 @@ const filteredRequests = computed(() => {
 
     const matchesSearch =
       !query ||
-      request.studentName.toLowerCase().includes(query) ||
-      request.requestNumber.toLowerCase().includes(query) ||
-      request.type.toLowerCase().includes(query) ||
-      request.studentId.toLowerCase().includes(query)
+      [
+        request.studentName,
+        request.requestNumber,
+        request.type,
+        request.studentId,
+      ].some((value) =>
+        String(value || '').toLowerCase().includes(query),
+      )
 
     return matchesStatus && matchesSearch
   })
 })
 
+// SELECT REQUEST
 function selectRequest(request) {
   selectedRequestId.value = request.id
   notice.value = ''
 }
 
-function saveRequest(updatedRequest) {
-  const index = requests.value.findIndex(
-    (request) => request.id === updatedRequest.id,
-  )
+// SAVE EXPECTED DATE AND INSTRUCTIONS
+async function saveRequest(updatedRequest) {
+  if (!updatedRequest?.id || saving.value) return
 
-  if (index === -1) return
+  saving.value = true
+  notice.value = ''
 
-  requests.value[index] = { ...updatedRequest }
-  notice.value = 'Request details saved successfully.'
+  try {
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    const userId = authData.user?.id
+
+    const updateData = {
+      expected_completion:
+        updatedRequest.expectedDate || null,
+      instructions:
+        updatedRequest.instruction?.trim() || null,
+      updated_at: new Date().toISOString(),
+    }
+
+    if (userId) {
+      updateData.handled_by = userId
+    }
+
+    const { error } = await supabase
+      .from('service_requests')
+      .update(updateData)
+      .eq('id', updatedRequest.id)
+
+    if (error) throw error
+
+    notice.value = 'Request details saved successfully.'
+
+    await fetchRequests()
+  } catch (error) {
+    console.error('Error saving request:', error)
+    notice.value =
+      error.message || 'Failed to save request details.'
+  } finally {
+    saving.value = false
+  }
 }
 
+// OPEN STATUS CONFIRMATION
 function askForStatusChange(status) {
   if (!selectedRequest.value) return
 
@@ -132,21 +239,68 @@ function askForStatusChange(status) {
   showStatusModal.value = true
 }
 
-function confirmStatusChange() {
-  if (!selectedRequest.value) return
+// UPDATE REQUEST STATUS IN SUPABASE
+async function confirmStatusChange() {
+  if (!selectedRequest.value || saving.value) return
 
-  const request = requests.value.find(
-    (item) => item.id === selectedRequestId.value,
-  )
+  saving.value = true
+  notice.value = ''
 
-  if (request) {
-    request.status = pendingStatus.value
+  try {
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+
+    const userId = authData.user?.id
+
+    const databaseStatus = {
+      Pending: 'pending',
+      Processing: 'processing',
+      Completed: 'completed',
+      Cancelled: 'cancelled',
+    }[pendingStatus.value]
+
+    const updateData = {
+      status: databaseStatus,
+      updated_at: new Date().toISOString(),
+      completed_at:
+        pendingStatus.value === 'Completed'
+          ? new Date().toISOString()
+          : null,
+    }
+
+    if (userId) {
+      updateData.handled_by = userId
+    }
+
+    const { error } = await supabase
+      .from('service_requests')
+      .update(updateData)
+      .eq('id', selectedRequest.value.id)
+
+    if (error) throw error
+
+    showStatusModal.value = false
     notice.value = `Request status changed to ${pendingStatus.value}.`
-  }
 
+    await fetchRequests()
+  } catch (error) {
+    console.error('Error updating request status:', error)
+    notice.value =
+      error.message || 'Failed to update request status.'
+  } finally {
+    saving.value = false
+  }
+}
+
+// CLOSE STATUS MODAL
+function closeStatusModal() {
+  if (saving.value) return
   showStatusModal.value = false
 }
 
+// FORMAT DATE
 function formatDate(date) {
   if (!date) return 'Not set'
 
@@ -159,6 +313,35 @@ function formatDate(date) {
     },
   )
 }
+
+// REALTIME REFRESH
+function subscribeToRequests() {
+  requestSubscription = supabase
+    .channel('library-service-requests')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'service_requests',
+      },
+      () => {
+        fetchRequests()
+      },
+    )
+    .subscribe()
+}
+
+onMounted(async () => {
+  await fetchRequests()
+  subscribeToRequests()
+})
+
+onUnmounted(() => {
+  if (requestSubscription) {
+    supabase.removeChannel(requestSubscription)
+  }
+})
 </script>
 
 <template>
@@ -186,6 +369,13 @@ function formatDate(date) {
         @click="notice = ''"
       >
         ×
+      </button>
+    </div>
+
+    <div v-if="errorMessage" class="error-message">
+      {{ errorMessage }}
+      <button type="button" @click="fetchRequests">
+        Try again
       </button>
     </div>
 
@@ -220,13 +410,22 @@ function formatDate(date) {
             </span>
             <span v-else>
               {{
-                requests.filter((request) => request.status === filter).length
+                requests.filter(
+                  (request) => request.status === filter,
+                ).length
               }}
             </span>
           </button>
         </div>
 
-        <div v-if="filteredRequests.length" class="request-cards">
+        <div v-if="loading" class="empty-list">
+          <p>Loading requests...</p>
+        </div>
+
+        <div
+          v-else-if="filteredRequests.length"
+          class="request-cards"
+        >
           <RequestCard
             v-for="request in filteredRequests"
             :key="request.id"
@@ -238,7 +437,13 @@ function formatDate(date) {
 
         <div v-else class="empty-list">
           <h3>No requests found</h3>
-          <p>Try another status filter or search term.</p>
+          <p>
+            {{
+              requests.length === 0
+                ? 'No Library requests have been submitted yet.'
+                : 'Try another status filter or search term.'
+            }}
+          </p>
         </div>
       </div>
 
@@ -250,7 +455,10 @@ function formatDate(date) {
           @close="selectedRequestId = null"
         />
 
-        <section v-if="selectedRequest" class="timeline-panel">
+        <section
+          v-if="selectedRequest"
+          class="timeline-panel"
+        >
           <h2>Request overview</h2>
 
           <div class="timeline-row">
@@ -296,7 +504,7 @@ function formatDate(date) {
       :show="showStatusModal"
       :status="pendingStatus"
       @confirm="confirmStatusChange"
-      @cancel="showStatusModal = false"
+      @cancel="closeStatusModal"
     />
   </main>
 </template>
@@ -383,6 +591,28 @@ h1 {
   color: inherit;
   cursor: pointer;
   font-size: 20px;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 15px;
+  border: 1px solid #d8aaaa;
+  border-radius: 8px;
+  background: #fceaea;
+  color: #8a1717;
+  font-size: 12px;
+}
+
+.error-message button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .requests-workspace {

@@ -1,103 +1,251 @@
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/Supabase.js'
 
 const activeFilter = ref('Pending')
 const selectedStudentId = ref(null)
-const showConfirm = ref(false)
 const notice = ref('')
+const loading = ref(false)
+const errorMessage = ref('')
+const returningLoanId = ref(null)
 
-const students = ref([
-  {
-    id: 1,
-    name: 'Rainier Amparo',
-    studentId: '2024-11203',
-    status: 'Pending',
-    requirements: [
-      {
-        id: 1,
-        name: 'Clean Code',
-        dueDate: 'Sep 29, 2026',
-        condition: 'Overdue',
-        returned: false,
-      },
-      {
-        id: 2,
-        name: 'Database Systems',
-        dueDate: 'Oct 1, 2026',
-        condition: 'Due',
-        returned: false,
-      },
-    ],
-  },
-  {
-    id: 2,
-    name: 'Chloe Monteza',
-    studentId: '2024-12033',
-    status: 'Cleared',
-    requirements: [],
-  },
-])
+const students = ref([])
+let clearanceChannel = null
 
+// FETCH CLEARANCE RECORDS FROM SUPABASE
+async function fetchClearanceRecords() {
+  loading.value = true
+  errorMessage.value = ''
+
+  try {
+    // Get borrowed and returned book loans
+    const { data: loans, error: loansError } = await supabase
+      .from('book_loans')
+      .select(`
+        id,
+        book_id,
+        student_id,
+        borrowed_at,
+        due_at,
+        returned_at,
+        status
+      `)
+      .in('status', ['borrowed', 'returned'])
+      .order('borrowed_at', { ascending: false })
+
+    if (loansError) throw loansError
+
+    if (!loans || loans.length === 0) {
+      students.value = []
+      return
+    }
+
+    // Get unique student IDs
+    const studentIds = [
+      ...new Set(loans.map(loan => loan.student_id)),
+    ]
+
+    // Get unique book IDs
+    const bookIds = [
+      ...new Set(loans.map(loan => loan.book_id)),
+    ]
+
+    // Fetch student profiles
+    const { data: profiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, student_id, full_name')
+      .in('id', studentIds)
+
+    if (profilesError) throw profilesError
+
+    // Fetch library book details
+    const { data: books, error: booksError } = await supabase
+      .from('library_books')
+      .select('id, title')
+      .in('id', bookIds)
+
+    if (booksError) throw booksError
+
+    // Create lookup maps
+    const profileMap = new Map(
+      (profiles || []).map(profile => [profile.id, profile]),
+    )
+
+    const bookMap = new Map(
+      (books || []).map(book => [book.id, book]),
+    )
+
+    // Group book loans by student
+    const studentMap = new Map()
+
+    loans.forEach(loan => {
+      const profile = profileMap.get(loan.student_id)
+      const book = bookMap.get(loan.book_id)
+
+      if (!studentMap.has(loan.student_id)) {
+        studentMap.set(loan.student_id, {
+          id: loan.student_id,
+          name: profile?.full_name || 'Unknown Student',
+          studentId: profile?.student_id || 'Not available',
+          requirements: [],
+        })
+      }
+
+      const student = studentMap.get(loan.student_id)
+
+      const returned = loan.status === 'returned'
+
+      student.requirements.push({
+        id: loan.id,
+        bookId: loan.book_id,
+        name: book?.title || 'Unknown Book',
+        dueDate: loan.due_at,
+        condition: getBookCondition(loan.due_at, returned),
+        returned,
+        returnedAt: loan.returned_at,
+      })
+    })
+
+    // Determine clearance status based on outstanding books
+    students.value = Array.from(studentMap.values()).map(student => ({
+      ...student,
+      status: student.requirements.some(book => !book.returned)
+        ? 'Pending'
+        : 'Cleared',
+    }))
+  } catch (error) {
+    console.error('Clearance fetch error:', error)
+    errorMessage.value = error.message || 'Unable to load clearance records.'
+  } finally {
+    loading.value = false
+  }
+}
+
+// DETERMINE BOOK CONDITION
+function getBookCondition(dueDate, returned) {
+  if (returned) return 'Returned'
+  if (!dueDate) return 'Due'
+
+  return new Date(dueDate) < new Date() ? 'Overdue' : 'Due'
+}
+
+// FORMAT DATE
+function formatDate(date) {
+  if (!date) return 'Not specified'
+
+  return new Date(date).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
+// FILTER STUDENTS
 const filteredStudents = computed(() =>
   students.value.filter(
     student => student.status === activeFilter.value,
   ),
 )
 
+// SELECTED STUDENT
 const selectedStudent = computed(() =>
   students.value.find(
     student => student.id === selectedStudentId.value,
   ) || null,
 )
 
+// COUNT OUTSTANDING BOOKS
 const outstandingCount = student =>
   student.requirements.filter(book => !book.returned).length
 
+// OPEN DETAILS
 function openDetails(student) {
   selectedStudentId.value = student.id
   notice.value = ''
 }
 
+// CLOSE DETAILS
 function closeDetails() {
   selectedStudentId.value = null
-  showConfirm.value = false
 }
 
-function markBookReturned(book) {
-  if (!selectedStudent.value || book.returned) return
-
-  book.returned = true
-  book.condition = 'Returned'
-
-  notice.value = `${book.name} marked as returned.`
-}
-
-function markAsCleared() {
-  if (!selectedStudent.value) return
-
-  if (outstandingCount(selectedStudent.value) > 0) {
-    notice.value =
-      'Please return all outstanding books before clearing this student.'
+// MARK BOOK AS RETURNED
+async function markBookReturned(book) {
+  if (!selectedStudent.value || book.returned || returningLoanId.value) {
     return
   }
 
-  showConfirm.value = true
+  const studentName = selectedStudent.value.name
+
+  returningLoanId.value = book.id
+  notice.value = ''
+
+  try {
+    // Call the Supabase database function
+    const { error } = await supabase.rpc('return_library_book', {
+      p_loan_id: book.id,
+    })
+
+    if (error) throw error
+
+    // Refresh clearance records
+    await fetchClearanceRecords()
+
+    notice.value = `${book.name} has been marked as returned for ${studentName}.`
+  } catch (error) {
+    console.error('Book return error:', error)
+    notice.value = error.message || 'Unable to mark this book as returned.'
+  } finally {
+    returningLoanId.value = null
+  }
 }
 
-function confirmClearance() {
-  if (!selectedStudent.value) return
-
-  selectedStudent.value.status = 'Cleared'
-  showConfirm.value = false
-  activeFilter.value = 'Cleared'
-  notice.value =
-    `${selectedStudent.value.name} has been marked as cleared.`
-}
-
+// DISMISS NOTICE
 function clearNotice() {
   notice.value = ''
 }
+
+// REALTIME SUBSCRIPTION
+function subscribeToClearanceChanges() {
+  clearanceChannel = supabase
+    .channel('library-clearance-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'book_loans',
+      },
+      () => {
+        fetchClearanceRecords()
+      },
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'library_books',
+      },
+      () => {
+        fetchClearanceRecords()
+      },
+    )
+    .subscribe()
+}
+
+onMounted(async () => {
+  await fetchClearanceRecords()
+  subscribeToClearanceChanges()
+})
+
+onUnmounted(() => {
+  if (clearanceChannel) {
+    supabase.removeChannel(clearanceChannel)
+    clearanceChannel = null
+  }
+})
 </script>
 
 <template>
@@ -127,7 +275,15 @@ function clearNotice() {
       </button>
     </div>
 
-    <section class="student-list">
+    <div v-if="errorMessage" class="notice error-notice" role="alert">
+      {{ errorMessage }}
+    </div>
+
+    <div v-if="loading && students.length === 0" class="empty-state">
+      Loading clearance records...
+    </div>
+
+    <section v-else class="student-list">
       <article
         v-for="student in filteredStudents"
         :key="student.id"
@@ -206,7 +362,9 @@ function clearNotice() {
             >
               <strong>{{ book.name }}</strong>
 
-              <span class="due-date">Due: {{ book.dueDate }}</span>
+              <span class="due-date">
+                Due: {{ formatDate(book.dueDate) }}
+              </span>
 
               <span
                 class="requirement-status"
@@ -226,9 +384,14 @@ function clearNotice() {
                 v-if="!book.returned && selectedStudent.status === 'Pending'"
                 class="return-button"
                 type="button"
+                :disabled="returningLoanId === book.id"
                 @click="markBookReturned(book)"
               >
-                Mark as Returned
+                {{
+                  returningLoanId === book.id
+                    ? 'Updating...'
+                    : 'Mark as Returned'
+                }}
               </button>
             </div>
           </div>
@@ -244,60 +407,11 @@ function clearNotice() {
             <span class="outstanding-count">
               Outstanding: {{ outstandingCount(selectedStudent) }}
             </span>
-
-            <button
-              class="mark-button"
-              type="button"
-              :disabled="outstandingCount(selectedStudent) > 0"
-              @click="markAsCleared"
-            >
-              Mark as Cleared
-            </button>
           </div>
 
           <span v-else class="cleared-label">
             ✓ Clearance Completed
           </span>
-        </section>
-      </div>
-
-      <div
-        v-if="showConfirm && selectedStudent"
-        class="modal-overlay confirm-overlay"
-        @click.self="showConfirm = false"
-      >
-        <section
-          class="confirm-modal"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="confirm-title"
-        >
-          <div class="warning-icon">!</div>
-
-          <h2 id="confirm-title">Mark as Cleared?</h2>
-
-          <p>
-            Confirm that {{ selectedStudent.name }} has returned all
-            outstanding books and completed the library clearance.
-          </p>
-
-          <div class="confirm-actions">
-            <button
-              class="back-button"
-              type="button"
-              @click="showConfirm = false"
-            >
-              Go Back
-            </button>
-
-            <button
-              class="mark-button"
-              type="button"
-              @click="confirmClearance"
-            >
-              Confirm
-            </button>
-          </div>
         </section>
       </div>
     </Teleport>
@@ -370,6 +484,11 @@ function clearNotice() {
   font-size: 18px;
 }
 
+.error-notice {
+  border-color: #b94a48;
+  color: #9b2525;
+}
+
 .student-list {
   display: flex;
   flex-direction: column;
@@ -437,8 +556,7 @@ function clearNotice() {
   background: rgb(30 20 20 / 45%);
 }
 
-.details-modal,
-.confirm-modal {
+.details-modal {
   width: min(100%, 440px);
   max-height: 85vh;
   overflow-y: auto;
@@ -538,9 +656,13 @@ function clearNotice() {
   font-size: 10px;
 }
 
-.return-button:hover,
-.mark-button:not(:disabled):hover {
+.return-button:hover:not(:disabled) {
   background: #720f15;
+}
+
+.return-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .modal-footer {
@@ -557,21 +679,6 @@ function clearNotice() {
   font-size: 10px;
 }
 
-.mark-button {
-  padding: 9px 12px;
-  border: 0;
-  border-radius: 5px;
-  background: #56090d;
-  color: white;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.mark-button:disabled {
-  background: #b99b9c;
-  cursor: not-allowed;
-}
-
 .cleared-message,
 .cleared-label {
   color: #376b43;
@@ -581,47 +688,6 @@ function clearNotice() {
 .cleared-label {
   display: inline-block;
   margin-top: 15px;
-}
-
-.confirm-modal {
-  width: min(100%, 350px);
-}
-
-.warning-icon {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 9px;
-  background: #ead1d1;
-  color: #760f16;
-  font-size: 23px;
-  font-weight: bold;
-}
-
-.confirm-modal h2 {
-  font: 21px Georgia, serif;
-}
-
-.confirm-modal p {
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 20px;
-}
-
-.back-button {
-  padding: 9px 12px;
-  border: 1px solid #bda0a0;
-  border-radius: 6px;
-  background: transparent;
-  color: #390607;
-  cursor: pointer;
 }
 
 @media (max-width: 700px) {

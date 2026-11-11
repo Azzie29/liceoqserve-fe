@@ -1,8 +1,37 @@
 
+<script setup>
+import { ref, onMounted, onUnmounted } from 'vue'
+
+const currentDate = ref('')
+
+let dateInterval = null
+
+const updateCurrentDate = () => {
+  currentDate.value = new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(new Date())
+}
+
+onMounted(() => {
+  updateCurrentDate()
+  dateInterval = setInterval(updateCurrentDate, 60000)
+})
+
+onUnmounted(() => {
+  if (dateInterval) {
+    clearInterval(dateInterval)
+  }
+})
+</script>
+
 <template>
   <section class="welcome">
-    <p>Friday, October 1, 2026</p>
+    <p>{{ currentDate }}</p>
+
     <h1>Library Dashboard</h1>
+
     <span>
       Review today's workload and continue the next transaction
     </span>
